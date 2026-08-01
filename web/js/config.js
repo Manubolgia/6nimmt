@@ -8,6 +8,7 @@
  */
 export const DEFAULT_SERVER = 'https://6nimmt.manuobelleiro00.workers.dev';
 
+
 const KEY = '6nimmt.server';
 
 function normalise(url) {
