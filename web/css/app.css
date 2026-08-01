@@ -4,8 +4,13 @@
      60  ground      (--bg, --surface)
      30  ink & type  (--fg, --muted, --line)
      10  accent      (--accent) — bull heads, your turn, danger
+              --gold — whoever is winning;  --wild — wildcards
    Light: bone / graphite / ink blue.  Dark: charcoal / bone / vermilion.
-   No radii, no gradients, no shadows. Transitions fade only.
+   No radii, no gradients, no shadows: the movement carries the life.
+
+   Card geometry (--card, --card-h) and the fixed block heights (--h-*) are
+   published by js/layout.js, which works them out from the space the board
+   actually has. The values here are only what the first paint uses.
    ================================================================== */
 
 :root {
@@ -18,15 +23,23 @@
   --line-strong: #26282b;
   --accent: #1b3a8c;
   --accent-ink: #f4f1ea;
+  --gold: #8a6a05;
+  --gold-ink: #f4f1ea;
+  --wild: #6b3fa0;
+  --wild-ink: #f4f1ea;
 
-  /* Row cards are sized so four rows plus the hand fit a phone without
-     scrolling; hand cards are a touch larger because they are tapped. */
-  --row-card: clamp(40px, 12.4vw, 54px);
-  --hand-card: clamp(46px, 14vw, 60px);
-  --reveal-card: 42px;
+  --card: 48px;
+  --card-h: 67px;
+  --row-label: 32px;
+  --h-topbar: 46px;
+  --h-roster: 44px;
+  --h-status: 38px;
+  --h-hint: 22px;
+  --h-action: 50px;
   --pad: 14px;
-  --gap: 6px;
+  --gap: 4px;
   --dur: 200ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
 }
@@ -41,6 +54,10 @@
   --line-strong: #ede6da;
   --accent: #e2452b;
   --accent-ink: #17181a;
+  --gold: #e8c14a;
+  --gold-ink: #17181a;
+  --wild: #b98cff;
+  --wild-ink: #17181a;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -54,17 +71,10 @@
     --line-strong: #ede6da;
     --accent: #e2452b;
     --accent-ink: #17181a;
-  }
-}
-
-/* Short phones: trim the card sizes so ten players still fit without the
-   table scrolling. */
-@media (max-height: 720px) {
-  :root {
-    --row-card: clamp(32px, 10.2vw, 44px);
-    --hand-card: clamp(38px, 11.8vw, 50px);
-    --reveal-card: 34px;
-    --pad: 11px;
+    --gold: #e8c14a;
+    --gold-ink: #17181a;
+    --wild: #b98cff;
+    --wild-ink: #17181a;
   }
 }
 
@@ -152,9 +162,17 @@ svg {
   transition: opacity var(--dur) linear, visibility 0s linear 0s;
 }
 
+.screen.is-entering {
+  animation: screen-in 280ms var(--ease);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  * {
+  *,
+  *::before,
+  *::after {
     transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
 
@@ -206,7 +224,11 @@ svg {
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  transition: opacity var(--dur) linear;
+  transition: opacity var(--dur) linear, transform 120ms var(--ease);
+}
+
+.btn:not(:disabled):active {
+  transform: scale(0.985);
 }
 
 .btn svg {
@@ -310,13 +332,51 @@ svg {
 }
 
 .toggle__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 14px;
   font-weight: 700;
+}
+
+.toggle__name svg {
+  width: 14px;
+  height: 14px;
 }
 
 .toggle__hint {
   font-size: 12px;
   color: var(--muted);
+}
+
+.toggle--wild .toggle__name svg {
+  color: var(--wild);
+}
+
+.toggle--wild[aria-pressed="true"] {
+  border-color: var(--wild);
+}
+
+.toggle--wild[aria-pressed="true"] .toggle__box {
+  background: var(--wild);
+  border-color: var(--wild);
+  color: var(--wild-ink);
+}
+
+/* A value with a minus and a plus beside it: the turn clock. */
+.stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+}
+
+.stepper__btns {
+  flex: none;
+  display: flex;
+  gap: var(--gap);
 }
 
 /* ---------------------------- home / forms -------------------------- */
@@ -538,17 +598,26 @@ svg {
 .board__main {
   flex: 1;
   min-height: 0;
+  /* Only ever reached by a window too short for even the smallest card; on a
+     phone layout.js has already made the table fit. */
   overflow-y: auto;
+  scrollbar-width: none;
   display: flex;
   flex-direction: column;
   justify-content: center;
 }
 
+.board__main::-webkit-scrollbar {
+  display: none;
+}
+
 .topbar {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px var(--pad);
+  height: var(--h-topbar);
+  padding: 0 var(--pad);
   border-bottom: 1px solid var(--line);
 }
 
@@ -567,12 +636,18 @@ svg {
 }
 
 .roster {
+  flex: none;
   display: flex;
+  align-items: center;
   gap: 4px;
-  padding: 8px var(--pad);
+  height: var(--h-roster);
+  padding: 0 var(--pad);
   overflow-x: auto;
   border-bottom: 1px solid var(--line);
   scrollbar-width: none;
+  /* A table of ten cannot fit; fade the edge so it reads as more to scroll to
+     rather than as a chip that has been cut in half. */
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
 }
 
 .roster::-webkit-scrollbar {
@@ -583,11 +658,11 @@ svg {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
+  gap: 5px;
+  padding: 5px 7px;
   border: 1px solid var(--line);
   font-size: 12px;
-  transition: opacity var(--dur) linear;
+  transition: border-color var(--dur) var(--ease), opacity var(--dur) linear;
 }
 
 .chip--ready {
@@ -598,8 +673,27 @@ svg {
   opacity: 0.45;
 }
 
+/* The player with the fewest bull heads. */
+.chip--lead {
+  border-color: var(--gold);
+}
+
+.chip__crown {
+  display: flex;
+  color: var(--gold);
+}
+
+.chip__crown svg {
+  width: 12px;
+  height: 12px;
+}
+
+.chip--lead .chip__name {
+  color: var(--gold);
+}
+
 .chip__name {
-  max-width: 84px;
+  max-width: 68px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -631,15 +725,17 @@ svg {
   display: flex;
   flex-direction: column;
   gap: var(--gap);
-  padding: var(--pad);
+  padding: var(--pad) var(--pad) 0;
 }
 
 .row {
+  flex: none;
   display: grid;
-  grid-template-columns: 32px repeat(5, var(--row-card));
+  grid-template-columns: var(--row-label) repeat(5, var(--card));
   justify-content: center;
-  gap: 4px;
+  gap: var(--gap);
   align-items: stretch;
+  height: var(--card-h);
   transition: opacity var(--dur) linear;
 }
 
@@ -654,6 +750,7 @@ svg {
   font-size: 12px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .row__bulls svg {
@@ -671,18 +768,32 @@ svg {
   cursor: pointer;
 }
 
-.row--pick .slot {
+.row--pick .slot--empty,
+.row--pick .card {
   border-color: var(--accent);
 }
 
+/* Picking with a wildcard: a full row is the one that will actually cost you. */
+.row--costly .row__bulls {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: pulse 1.4s var(--ease) infinite;
+}
+
+.row--swept .row__bulls {
+  animation: flash-label 340ms var(--ease);
+}
+
+/* Both dimensions come from the grid, so the proportions are settled in
+   layout.js rather than argued about here with aspect-ratio. An occupied slot
+   draws no border of its own: the card already has one, and doubling it up
+   makes a card on a row read smaller than the same card in hand. */
 .slot {
   position: relative;
-  aspect-ratio: 5 / 7;
-  border: 1px solid var(--line);
 }
 
 .slot--empty {
-  border-style: dashed;
+  border: 1px dashed var(--line);
   opacity: 0.5;
 }
 
@@ -690,6 +801,7 @@ svg {
   border-color: var(--accent);
   border-style: solid;
   opacity: 1;
+  animation: target-in 220ms var(--ease);
 }
 
 /* cards */
@@ -702,7 +814,8 @@ svg {
   border: 1px solid var(--line-strong);
   background: var(--surface);
   color: var(--fg);
-  transition: opacity var(--dur) linear;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease), opacity var(--dur) linear;
 }
 
 .card__num {
@@ -713,7 +826,8 @@ svg {
   font-weight: 800;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.04em;
-  font-size: clamp(15px, 4.6vw, 21px);
+  /* Tied to the card, not the viewport, so every card reads the same. */
+  font-size: calc(var(--card) * 0.4);
 }
 
 .card__bulls {
@@ -725,20 +839,57 @@ svg {
   padding: 2px 1px;
   border-top: 1px solid var(--line);
   color: var(--accent);
-  min-height: 14px;
+  min-height: calc(var(--card) * 0.28);
 }
 
 .card__bulls svg {
-  width: 8px;
-  height: 8px;
+  width: calc(var(--card) * 0.17);
+  height: calc(var(--card) * 0.17);
 }
 
-.card--new {
-  animation: fade-in var(--dur) linear;
+/* Wildcards. */
+
+.card--wild {
+  border-color: var(--wild);
+  color: var(--wild);
+}
+
+.card__wild {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.card__wild svg {
+  width: 52%;
+  height: 52%;
+}
+
+.card--wild .card__bulls {
+  border-top-color: var(--wild);
+  min-height: calc(var(--card) * 0.28);
+}
+
+.hand__card:not(:disabled) .card--wild {
+  animation: wild-glow 2.4s var(--ease) infinite;
+}
+
+.card--sel.card--wild {
+  background: var(--wild);
+  border-color: var(--wild);
+  color: var(--wild-ink);
+  animation: none;
+}
+
+/* The card that has just landed on a row. */
+.card--land {
+  animation: land 420ms var(--ease);
+  z-index: 1;
 }
 
 .card--taken {
-  animation: fade-out var(--dur) linear both;
+  animation: swept 240ms var(--ease) both;
 }
 
 .card--sel {
@@ -762,6 +913,8 @@ svg {
   color: var(--muted);
 }
 
+/* ---------------------------- animations ---------------------------- */
+
 @keyframes fade-in {
   from {
     opacity: 0;
@@ -771,12 +924,114 @@ svg {
   }
 }
 
-@keyframes fade-out {
-  from {
+/* A card arriving on a row: a beat of accent, and a small overshoot. */
+@keyframes land {
+  0% {
+    transform: scale(0.72) translateY(-14%);
+    opacity: 0;
+  }
+  45% {
+    transform: scale(1.12);
+    opacity: 1;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+  }
+  70% {
+    transform: scale(0.97);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes swept {
+  0% {
+    transform: scale(1);
     opacity: 1;
   }
-  to {
+  35% {
+    transform: scale(1.06);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.8) translateY(30%);
     opacity: 0;
+  }
+}
+
+@keyframes flash-label {
+  0%,
+  100% {
+    color: var(--muted);
+    border-color: var(--line);
+  }
+  40% {
+    color: var(--accent-ink);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+}
+
+@keyframes target-in {
+  from {
+    opacity: 0.2;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes wild-glow {
+  0%,
+  100% {
+    border-color: var(--wild);
+  }
+  50% {
+    border-color: var(--line);
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(9px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes screen-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes panel-up {
+  from {
+    transform: translateY(14%);
+  }
+  to {
+    transform: translateY(0);
   }
 }
 
@@ -786,8 +1041,8 @@ svg {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 40px;
+  gap: 10px;
+  height: var(--h-status);
   padding: 0 var(--pad);
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
@@ -796,7 +1051,14 @@ svg {
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--muted);
-  transition: opacity var(--dur) linear;
+  transition: color var(--dur) var(--ease);
+}
+
+.status__text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status--act {
@@ -808,14 +1070,64 @@ svg {
   height: 14px;
 }
 
+/* turn clock */
+
+.clock {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+}
+
+.clock__bar {
+  display: block;
+  width: 54px;
+  height: 4px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.clock__fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--fg);
+  transform-origin: left center;
+  transform: scaleX(1);
+  transition: transform 120ms linear;
+}
+
+.clock__num {
+  min-width: 2ch;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.clock--urgent {
+  color: var(--accent);
+  animation: pulse 900ms var(--ease) infinite;
+}
+
+.clock--urgent .clock__fill {
+  background: var(--accent);
+}
+
+/* reveal strip — its height is held even before the first reveal, so the
+   board never jumps under a thumb already reaching for a card */
+
 .reveal {
   flex: none;
   display: flex;
-  gap: 4px;
-  padding: 8px var(--pad);
+  align-items: flex-start;
+  gap: var(--gap);
+  height: calc(var(--card-h) + 28px);
+  /* Indented past the bull-head column so it lines up with the cards above. */
+  padding: 8px var(--pad) 0 calc(var(--pad) + var(--row-label) + var(--gap));
   overflow-x: auto;
   scrollbar-width: none;
-  border-bottom: 1px solid var(--line);
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
 }
 
 .reveal::-webkit-scrollbar {
@@ -824,15 +1136,21 @@ svg {
 
 .reveal__item {
   flex: none;
-  width: var(--reveal-card);
+  width: var(--card);
   display: flex;
   flex-direction: column;
   gap: 3px;
   transition: opacity var(--dur) linear;
 }
 
+/* Only when the trick itself is new; see the note on render() in app.js. */
+.reveal.is-fresh .reveal__item {
+  animation: rise 260ms var(--ease) backwards;
+  animation-delay: calc(var(--i) * 40ms);
+}
+
 .reveal__card {
-  aspect-ratio: 5 / 7;
+  height: var(--card-h);
 }
 
 .reveal__who {
@@ -848,6 +1166,18 @@ svg {
   opacity: 0.28;
 }
 
+.reveal__item--waiting {
+  opacity: 0.45;
+}
+
+.reveal__card .slot--empty {
+  height: 100%;
+}
+
+.reveal__item--live .reveal__card {
+  transform: translateY(-3px);
+}
+
 .reveal__item--live .reveal__who {
   color: var(--accent);
 }
@@ -857,27 +1187,45 @@ svg {
 .hand-wrap {
   flex: none;
   border-top: 1px solid var(--line);
-  padding: 10px var(--pad) calc(10px + env(safe-area-inset-bottom));
+  /* The screen itself already keeps clear of the notch and the home bar. */
+  padding: 8px var(--pad);
   background: var(--bg);
 }
 
+/* Five columns, so ten cards are two tidy lines that always fit. The empty
+   first column lines the hand up under the cards on the rows above, and both
+   lines are held all round: without that the table would climb the screen
+   every time a card left the hand. */
 .hand {
-  display: flex;
-  gap: 4px;
-  overflow-x: auto;
-  padding-bottom: 8px;
-  scrollbar-width: none;
+  display: grid;
+  grid-template-columns: var(--row-label) repeat(5, var(--card));
+  grid-template-rows: repeat(2, var(--card-h));
+  justify-content: center;
+  gap: var(--gap);
+  margin-bottom: var(--gap);
 }
 
-.hand::-webkit-scrollbar {
-  display: none;
+.hand__card:nth-child(5n + 1) {
+  grid-column-start: 2;
 }
 
 .hand__card {
-  flex: none;
-  width: var(--hand-card);
-  aspect-ratio: 5 / 7;
-  transition: opacity var(--dur) linear;
+  height: var(--card-h);
+  transition: transform 140ms var(--ease), opacity var(--dur) linear;
+}
+
+/* Only when the hand itself has changed; see the note on render() in app.js. */
+.hand.is-dealt .hand__card {
+  animation: rise 240ms var(--ease) backwards;
+  animation-delay: calc(var(--i) * 25ms);
+}
+
+.hand__card[aria-pressed="true"] {
+  transform: translateY(-5px);
+}
+
+.hand__card:not(:disabled):active {
+  transform: translateY(-2px) scale(0.97);
 }
 
 .hand__card:disabled {
@@ -885,18 +1233,23 @@ svg {
   cursor: default;
 }
 
+/* Pinned to the same number layout.js budgets for. */
+.hand-wrap .btn {
+  min-height: var(--h-action);
+  height: var(--h-action);
+}
+
 .hint {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 18px;
+  height: var(--h-hint);
   white-space: nowrap;
-  margin-bottom: 8px;
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
-  transition: opacity var(--dur) linear;
+  transition: color var(--dur) var(--ease);
 }
 
 .hint--warn {
@@ -929,11 +1282,28 @@ svg {
   min-height: 48px;
   padding: 0 12px;
   border: 1px solid var(--line);
+  animation: rise 300ms var(--ease) backwards;
+  animation-delay: calc(var(--i, 0) * 50ms);
+}
+
+/* Fewest bull heads: leading now, or the winner once it is over. */
+.score-row--lead {
+  border-color: var(--gold);
+  color: var(--gold);
 }
 
 .score-row--win {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-width: 2px;
+}
+
+.score-row__crown {
+  display: flex;
+  color: var(--gold);
+}
+
+.score-row__crown svg {
+  width: 15px;
+  height: 15px;
 }
 
 .score-row__rank {
@@ -943,8 +1313,10 @@ svg {
   color: var(--muted);
 }
 
-.score-row--win .score-row__rank {
-  color: var(--accent);
+.score-row--lead .score-row__rank,
+.score-row--lead .score-row__delta,
+.score-row--lead .score-row__total svg {
+  color: var(--gold);
 }
 
 .score-row__name {
@@ -1004,6 +1376,12 @@ svg {
   padding-bottom: calc(var(--pad) + env(safe-area-inset-bottom));
   max-height: 86%;
   overflow-y: auto;
+  transform: translateY(14%);
+  transition: transform var(--dur) var(--ease);
+}
+
+.sheet.is-active .sheet__panel {
+  transform: translateY(0);
 }
 
 .scroll {
@@ -1047,11 +1425,15 @@ svg {
   text-align: center;
   opacity: 0;
   visibility: hidden;
-  transition: opacity var(--dur) linear, visibility 0s linear var(--dur);
+  transform: translateY(10px);
+  transition: opacity var(--dur) linear, transform var(--dur) var(--ease),
+    visibility 0s linear var(--dur);
 }
 
 .toast.is-active {
   opacity: 1;
   visibility: visible;
-  transition: opacity var(--dur) linear, visibility 0s linear 0s;
+  transform: translateY(0);
+  transition: opacity var(--dur) linear, transform var(--dur) var(--ease),
+    visibility 0s linear 0s;
 }

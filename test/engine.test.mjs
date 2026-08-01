@@ -9,6 +9,7 @@ import {
   ROW_COUNT,
   ROW_LIMIT,
   TARGET_SCORE,
+  WILD_COUNT,
   buildDeck,
   bullHeads,
   bullTotal,
@@ -16,10 +17,12 @@ import {
   chooseRow,
   createGame,
   deckSize,
+  isWild,
   makeRng,
   nextRound,
   previewPlay,
   resolveIfReady,
+  rowEnd,
   selectCard,
   targetRow,
 } from '../web/js/engine.js';
@@ -98,10 +101,10 @@ test('the cheapest row is the one with the fewest bull heads', () => {
 
 /* ------------------------------ dealing ------------------------------- */
 
-function newGame(playerCount, proVariant = false, seed = 1) {
+function newGame(playerCount, proVariant = false, seed = 1, wildVariant = false) {
   const players = [];
   for (let i = 0; i < playerCount; i++) players.push({ id: `p${i}`, name: `P${i}` });
-  return createGame(players, proVariant, seed);
+  return createGame(players, { proVariant, wildVariant }, seed);
 }
 
 test('the deal gives everyone ten cards and starts four rows', () => {
@@ -218,16 +221,121 @@ test('a row is never longer than five cards', () => {
   }
 });
 
+/* ----------------------------- wildcards ------------------------------ */
+
+test('the wildcard deal replaces dealt cards, never row starters', () => {
+  for (let n = MIN_PLAYERS; n <= MAX_PLAYERS; n++) {
+    for (const pro of [false, true]) {
+      const game = newGame(n, pro, 41 + n, true);
+      const hands = game.players.flatMap((p) => p.hand);
+      const wilds = hands.filter(isWild);
+      assert.equal(wilds.length, WILD_COUNT, 'exactly three wildcards are dealt');
+      assert.equal(new Set(wilds).size, WILD_COUNT, 'each wildcard is distinct');
+      for (const p of game.players) assert.equal(p.hand.length, HAND_SIZE);
+      for (const row of game.rows) assert.ok(!isWild(row[0]));
+      // The deck is otherwise untouched, so the professional promise holds.
+      const numbered = hands.filter((c) => !isWild(c)).concat(game.rows.flat());
+      assert.equal(new Set(numbered).size, numbered.length, 'no card dealt twice');
+      assert.equal(numbered.length, n * HAND_SIZE + ROW_COUNT - WILD_COUNT);
+    }
+  }
+});
+
+test('a wildcard is worth nothing and sorts to the back of the hand', () => {
+  assert.equal(bullHeads(-1), 0);
+  assert.equal(bullTotal([-1, 55, -2]), 7);
+  const game = newGame(4, false, 77, true);
+  for (const p of game.players) {
+    const firstWild = p.hand.findIndex(isWild);
+    if (firstWild === -1) continue;
+    assert.ok(
+      p.hand.slice(firstWild).every(isWild),
+      'wildcards trail the numbered cards so auto-play never picks one',
+    );
+  }
+});
+
+test('a wildcard resolves last, whatever the numbers played with it', () => {
+  const game = newGame(3, false, 5, true);
+  game.rows = [[10], [20], [30], [40]];
+  game.players[0].hand = [-1];
+  game.players[1].hand = [11];
+  game.players[2].hand = [99];
+  selectCard(game, 'p0', -1);
+  selectCard(game, 'p1', 11);
+  selectCard(game, 'p2', 99);
+  resolveIfReady(game);
+
+  const order = game.log[0].cards.map((c) => c.card);
+  assert.deepEqual(order, [11, 99, -1], 'the wildcard goes after both numbers');
+  assert.equal(game.phase, 'choose_row', 'its owner names the row');
+  assert.equal(game.chooser, 'p0');
+  assert.equal(game.log.at(-1).reason, 'wild');
+});
+
+test('a wildcard joins any row for free and is transparent afterwards', () => {
+  const game = newGame(2, false, 5, true);
+  game.rows = [[10], [20], [30], [40]];
+  game.players[0].hand = [-1];
+  game.players[1].hand = [99];
+  selectCard(game, 'p0', -1);
+  selectCard(game, 'p1', 99);
+  resolveIfReady(game);
+  // 99 lands on row 3 first, then the wildcard chooses.
+  assert.deepEqual(game.rows[3], [40, 99]);
+  assert.equal(chooseRow(game, 'p0', 0), null);
+
+  assert.deepEqual(game.rows[0], [10, -1]);
+  assert.equal(game.players[0].score, 0, 'placing a wildcard costs nothing');
+  assert.equal(rowEnd(game.rows[0]), 10, 'the row still ends on 10');
+  assert.equal(targetRow(game.rows, 15), 0, 'so 15 still belongs there');
+});
+
+test('a wildcard onto a full row takes it, like any sixth card', () => {
+  const game = newGame(2, false, 5, true);
+  game.rows = [[1], [2], [3], [40, 41, 42, 43, 44]];
+  game.players[0].hand = [-1];
+  game.players[1].hand = [4];
+  selectCard(game, 'p0', -1);
+  selectCard(game, 'p1', 4);
+  resolveIfReady(game);
+  assert.equal(chooseRow(game, 'p0', 3), null);
+
+  assert.equal(game.players[0].score, bullTotal([40, 41, 42, 43, 44]));
+  assert.deepEqual(game.rows[3], [-1], 'the wildcard starts the row again');
+  assert.equal(rowEnd(game.rows[3]), 0, 'a lone wildcard row ends on nothing');
+  // The table is now [[1], [2], [3, 4], [-1]].
+  assert.equal(targetRow(game.rows, 2), 0, 'a real end card still wins the race');
+  assert.equal(targetRow(game.rows, 1), 3, 'but it beats being too low');
+});
+
+test('auto-play sends a wildcard to the emptiest row, not the cheapest', () => {
+  //            3 bulls, 3 cards
+  const rows = [[1, 2, 3], [11], [22], [33]];
+  assert.equal(cheapestRow(rows, 1), 0, 'a numbered card wants the fewest bulls');
+  assert.equal(cheapestRow(rows, -1), 1, 'a wildcard wants room to land');
+});
+
+test('preview calls a wildcard a wildcard', () => {
+  assert.deepEqual(previewPlay([[10], [20], [30], [40]], -2), {
+    row: -1,
+    takes: false,
+    bulls: 0,
+    kind: 'wild',
+  });
+});
+
 /* ------------------------- full-game simulation ------------------------ */
 
 /**
  * Plays a whole game with pseudo-random choices and checks the invariants that
  * must hold at every step.
  */
-function simulate(playerCount, proVariant, seed) {
+function simulate(playerCount, proVariant, seed, wildVariant = false) {
   const rng = makeRng(seed);
-  const game = newGame(playerCount, proVariant, seed);
+  const game = newGame(playerCount, proVariant, seed, wildVariant);
   const highest = deckSize(playerCount, proVariant);
+  const inDeck = (c) => isWild(c) || (c >= 1 && c <= highest);
   let rounds = 0;
   let tricks = 0;
 
@@ -244,7 +352,7 @@ function simulate(playerCount, proVariant, seed) {
       assert.equal(chooseRow(game, game.chooser, Math.floor(rng() * ROW_COUNT)), null);
     } else if (game.phase === 'round_over') {
       rounds += 1;
-      checkConservation(game, highest);
+      checkConservation(game, inDeck);
       assert.ok(game.players.every((p) => p.score < TARGET_SCORE));
       assert.equal(nextRound(game, seed + rounds), null);
     } else if (game.phase === 'game_over') {
@@ -261,7 +369,7 @@ function simulate(playerCount, proVariant, seed) {
     const seen = new Set();
     for (const row of game.rows) {
       for (const c of row) {
-        assert.ok(c >= 1 && c <= highest);
+        assert.ok(inDeck(c), `card ${c} is not in the deck`);
         assert.ok(!seen.has(c), `card ${c} is on the table twice`);
         seen.add(c);
       }
@@ -287,20 +395,29 @@ function simulate(playerCount, proVariant, seed) {
 }
 
 /** No bull head is created or lost: table + taken must equal what was dealt. */
-function checkConservation(game, highest) {
+function checkConservation(game, inDeck) {
   const onTable = game.rows.flat();
   const taken = game.players.flatMap((p) => p.roundTaken);
   const all = onTable.concat(taken).sort((a, b) => a - b);
   const expected = game.players.length * HAND_SIZE + ROW_COUNT;
   assert.equal(all.length, expected, 'every dealt card is on the table or taken');
   assert.equal(new Set(all).size, expected, 'no duplicates');
-  for (const c of all) assert.ok(c >= 1 && c <= highest);
+  for (const c of all) assert.ok(inDeck(c), `card ${c} is not in the deck`);
 }
 
 test('random full games hold their invariants at every table size', () => {
   for (let n = MIN_PLAYERS; n <= MAX_PLAYERS; n++) {
     for (const pro of [false, true]) {
       const { game } = simulate(n, pro, n * 31 + (pro ? 7 : 0));
+      assert.equal(game.players.length, n);
+    }
+  }
+});
+
+test('wildcards survive full games, on their own and with the pro deck', () => {
+  for (let n = MIN_PLAYERS; n <= MAX_PLAYERS; n++) {
+    for (const pro of [false, true]) {
+      const { game } = simulate(n, pro, n * 53 + (pro ? 11 : 0), true);
       assert.equal(game.players.length, n);
     }
   }

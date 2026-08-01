@@ -2,12 +2,11 @@
  * Where the game server lives.
  *
  * The board itself is static (GitHub Pages); rooms run in a Cloudflare Durable
- * Object. Set DEFAULT_SERVER once after `wrangler deploy` — or override it at
- * runtime with ?server=https://... , which is persisted so testers can point a
- * hosted build at their own worker.
+ * Object. There is nothing here for a player to configure — the address is
+ * baked in at deploy time. Somebody running their own worker points a build at
+ * it with ?server=https://... , which is remembered from then on.
  */
-export const DEFAULT_SERVER = 'https://6nimmt.manuobelleiro00.workers.dev';
-
+const DEFAULT_SERVER = 'https://6nimmt.manuobelleiro00.workers.dev';
 
 const KEY = '6nimmt.server';
 
@@ -33,20 +32,6 @@ export function serverUrl() {
     /* private mode */
   }
   return normalise(DEFAULT_SERVER);
-}
-
-export function setServerUrl(url) {
-  const value = normalise(url);
-  try {
-    localStorage.setItem(KEY, value);
-  } catch (_) {
-    /* private mode */
-  }
-  return value;
-}
-
-export function isServerConfigured() {
-  return !serverUrl().includes('example.workers.dev');
 }
 
 export function socketUrl(code) {

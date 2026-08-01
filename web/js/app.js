@@ -4,7 +4,6 @@
  */
 
 import { $, $$, delegate, sleep } from './dom.js';
-import { isServerConfigured, serverUrl, setServerUrl } from './config.js';
 import {
   createClient,
   createRoom,
@@ -14,6 +13,8 @@ import {
   savedRoom,
 } from './net.js';
 import { MIN_PLAYERS } from './engine.js';
+import { REVEAL_MS, SWEEP_MS, TURN_SECONDS, stepMs } from './timing.js';
+import { watchViewport } from './layout.js';
 import {
   renderGame,
   renderHome,
@@ -25,17 +26,8 @@ import {
   standingsSheet,
 } from './screens.js';
 
-const REVEAL_MS = 750;
-const SWEEP_MS = 260;
-/* Resolving ten cards one at a time would drag, so the per-card beat shrinks
-   as the table grows, keeping a trick under about five seconds. */
-const STEP_BUDGET_MS = 4500;
-const STEP_MIN_MS = 300;
-const STEP_MAX_MS = 620;
-
-function stepMs() {
-  const count = app.state ? app.state.players.length : 4;
-  return Math.max(STEP_MIN_MS, Math.min(STEP_MAX_MS, STEP_BUDGET_MS / count));
+function beatMs() {
+  return stepMs(app.state ? app.state.players.length : 4);
 }
 
 const THEME_KEY = '6nimmt.theme';
@@ -67,24 +59,32 @@ const app = {
   status: 'offline',
   selected: null,
   busy: false,
-  notice: isServerConfigured()
-    ? ''
-    : 'No game server configured yet. Add one under Settings.',
+  notice: '',
   theme: loadTheme(),
   canInstall: false,
-  server: serverUrl(),
   rejoining: false,
   view: emptyView(),
+  /** Local deadline for the turn clock, translated out of server time. */
+  clock: null,
 };
 
 function emptyView() {
-  return { trickId: 0, shown: 0, resolved: 0, rows: null, sweep: null, caughtUp: true };
+  return {
+    trickId: 0,
+    shown: 0,
+    resolved: 0,
+    rows: null,
+    sweep: null,
+    land: null,
+    caughtUp: true,
+  };
 }
 
 let installPrompt = null;
 let animating = false;
 let currentScreen = null;
 let toastTimer = null;
+let clockTimer = null;
 
 const client = createClient({
   onState(state) {
@@ -139,7 +139,16 @@ function screenId() {
 }
 
 /** Horizontal strips keep their scroll position across re-renders. */
-const KEEP_SCROLL = ['#hand', '#reveal', '#roster'];
+const KEEP_SCROLL = ['#reveal', '#roster'];
+
+/*
+ * A screen is rebuilt from scratch on every state change, which restarts any
+ * CSS animation on it. The entrance animations are therefore gated on the
+ * content actually being new — otherwise the hand would flicker its way back in
+ * several times a trick.
+ */
+let lastHand = null;
+let lastTrick = null;
 
 function render() {
   const id = screenId();
@@ -151,6 +160,14 @@ function render() {
     return el ? [sel, el.scrollLeft] : null;
   }).filter(Boolean);
 
+  const s = app.state;
+  const handSig = s && s.hand ? s.hand.join(',') : '';
+  app.view.freshHand = handSig !== lastHand;
+  lastHand = handSig;
+  const trickSig = s && s.game ? `${s.game.round}.${s.game.trickId}` : '';
+  app.view.freshTrick = trickSig !== lastTrick;
+  lastTrick = trickSig;
+
   node.innerHTML = RENDERERS[id](app);
 
   for (const [sel, left] of scrolls) {
@@ -159,9 +176,18 @@ function render() {
   }
 
   if (currentScreen !== id) {
-    for (const el of $$('.screen')) el.classList.toggle('is-active', el === node);
+    for (const el of $$('.screen')) {
+      el.classList.toggle('is-active', el === node);
+      if (el !== node) el.classList.remove('is-entering');
+    }
+    // Restart the entrance animation, which needs the class to actually change.
+    node.classList.remove('is-entering');
+    void node.offsetWidth;
+    node.classList.add('is-entering');
     currentScreen = id;
   }
+
+  tickClock();
 }
 
 function toast(text) {
@@ -170,6 +196,34 @@ function toast(text) {
   el.classList.add('is-active');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('is-active'), 2600);
+}
+
+/* ------------------------------ turn clock ---------------------------- */
+
+/**
+ * Paint the countdown. Deliberately outside `render`: the numbers move every
+ * frame and rebuilding the board that often would restart every animation on
+ * it and fight whatever the thumb is doing.
+ */
+function tickClock() {
+  const fill = $('#clock-fill');
+  if (!fill) return;
+  const s = app.state;
+  const total = (s && s.turnSeconds ? s.turnSeconds : 0) * 1000;
+  if (!app.clock || !total) return;
+  // While the previous trick is still resolving the clock has not started yet,
+  // so it sits full rather than counting down time nobody can use.
+  const left = Math.max(0, Math.min(total, app.clock.endsAt - Date.now()));
+  fill.style.transform = `scaleX(${(left / total).toFixed(4)})`;
+  const num = $('#clock-num');
+  if (num) num.textContent = Math.ceil(left / 1000);
+  const clock = $('#clock');
+  if (clock) clock.classList.toggle('clock--urgent', left <= 3200);
+}
+
+function watchClock() {
+  clearInterval(clockTimer);
+  clockTimer = setInterval(tickClock, 100);
 }
 
 function openSheet(html) {
@@ -188,6 +242,11 @@ function closeSheet() {
 function adoptState(state) {
   const prev = app.state;
   app.state = state;
+  // The deadline is in the server's clock; carry it over using the server's own
+  // idea of "now" so a phone set to the wrong time still counts down correctly.
+  app.clock = state.deadlineAt
+    ? { endsAt: Date.now() + (state.deadlineAt - state.now) }
+    : null;
 
   if (!state.game) {
     app.view = emptyView();
@@ -200,11 +259,9 @@ function adoptState(state) {
     const reveal = state.game.log.find((e) => e.t === 'reveal');
     const base = reveal ? reveal.rows : state.game.rows;
     app.view = {
+      ...emptyView(),
       trickId: state.game.trickId,
-      shown: 0,
-      resolved: 0,
       rows: base.map((r) => r.slice()),
-      sweep: null,
       caughtUp: state.game.log.length === 0,
     };
     app.selected = null;
@@ -233,22 +290,27 @@ async function runAnimation() {
       if (entry.t === 'reveal') {
         app.view.rows = entry.rows.map((r) => r.slice());
         app.view.resolved = 0;
+        app.view.land = null;
         render();
         await sleep(REVEAL_MS);
       } else if (entry.t === 'place') {
         app.view.rows = entry.rows.map((r) => r.slice());
         app.view.resolved += 1;
+        app.view.land = { row: entry.row, slot: entry.rows[entry.row].length - 1 };
         render();
-        await sleep(stepMs());
+        await sleep(beatMs());
       } else if (entry.t === 'take') {
         app.view.sweep = entry.row;
+        app.view.land = null;
         render();
         await sleep(SWEEP_MS);
         app.view.sweep = null;
         app.view.rows = entry.rows.map((r) => r.slice());
         app.view.resolved += 1;
+        // The taker's own card is all that is left of the row it just cleared.
+        app.view.land = { row: entry.row, slot: 0 };
         render();
-        await sleep(stepMs());
+        await sleep(beatMs());
       } else if (entry.t === 'need_choice') {
         // Only pause here while the choice is still outstanding. Once it has
         // been made the log continues past this marker, and a replay — after a
@@ -260,7 +322,10 @@ async function runAnimation() {
     animating = false;
     const g = app.state && app.state.game;
     app.view.caughtUp = !g || app.view.shown >= g.log.length;
-    if (app.view.caughtUp && g) app.view.rows = g.rows.map((r) => r.slice());
+    if (app.view.caughtUp && g) {
+      app.view.rows = g.rows.map((r) => r.slice());
+      app.view.land = null;
+    }
     render();
   }
 }
@@ -269,11 +334,6 @@ async function runAnimation() {
 
 async function createAndJoin() {
   if (!requireName()) return;
-  if (!isServerConfigured()) {
-    app.notice = 'No game server configured yet. Add one under Settings.';
-    render();
-    return;
-  }
   app.busy = true;
   app.notice = '';
   render();
@@ -368,7 +428,6 @@ const ACTIONS = {
   join: joinRoom,
   leave: leaveRoom,
   settings: () => {
-    app.server = serverUrl();
     app.screen = 'settings';
     render();
   },
@@ -384,14 +443,6 @@ const ACTIONS = {
     app.canInstall = false;
     render();
   },
-  'save-server': () => {
-    const field = $('#server-input');
-    if (!field) return;
-    app.server = setServerUrl(field.value);
-    app.notice = isServerConfigured() ? '' : 'That does not look like a server URL';
-    toast('Server saved');
-    render();
-  },
   copy: async () => {
     const code = app.state && app.state.code;
     if (!code) return;
@@ -403,6 +454,13 @@ const ACTIONS = {
     }
   },
   variant: () => client.send({ type: 'setVariant', proVariant: !app.state.proVariant }),
+  wild: () => client.send({ type: 'setWild', wildVariant: !app.state.wildVariant }),
+  clock: (el) => {
+    const at = TURN_SECONDS.indexOf(app.state.turnSeconds);
+    const next = at + Number(el.dataset.step);
+    if (next < 0 || next >= TURN_SECONDS.length) return;
+    client.send({ type: 'setTurnSeconds', seconds: TURN_SECONDS[next] });
+  },
   kick: (el) => client.send({ type: 'kick', id: el.dataset.id }),
   start: () => client.send({ type: 'start' }),
   pick: (el) => {
@@ -421,6 +479,8 @@ const ACTIONS = {
 
 function boot() {
   applyTheme();
+  watchViewport();
+  watchClock();
 
   const root = $('#app');
 
@@ -450,9 +510,7 @@ function boot() {
       app.codeDraft = clean;
       const button = root.querySelector('[data-act="join"]');
       if (button) button.disabled = clean.length !== 4;
-      return;
     }
-    if (el.id === 'server-input') app.server = el.value;
   });
 
   root.addEventListener('keydown', (event) => {

@@ -4,6 +4,8 @@
  * CI exercise the same worker/src/index.js that gets deployed.
  */
 
+import { webcrypto } from 'node:crypto';
+
 /** One end of a WebSocketPair. Sending on one end delivers on the other. */
 export class ShimSocket {
   constructor(role) {
@@ -107,6 +109,9 @@ export class ShimResponse {
  */
 export function installWorkersGlobals() {
   globalThis.Response = ShimResponse;
+  // `crypto` is only global from Node 19 on; the worker uses it for room codes
+  // and deal seeds.
+  if (!globalThis.crypto) globalThis.crypto = webcrypto;
   globalThis.WebSocket = { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 };
   globalThis.WebSocketPair = function WebSocketPair() {
     const client = new ShimSocket('client');

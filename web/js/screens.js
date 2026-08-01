@@ -2,16 +2,27 @@
 
 import { esc } from './dom.js';
 import { icon, markSvg } from './art.js';
-import { BULL_GLYPH, cardFace, revealMarkup, rowsMarkup } from './cards.js';
+import {
+  BULL_GLYPH,
+  cardFace,
+  cardLabel,
+  revealMarkup,
+  rowsMarkup,
+  waitingMarkup,
+} from './cards.js';
 import {
   HAND_SIZE,
   MAX_PLAYERS,
   MIN_PLAYERS,
+  ROW_LIMIT,
   TARGET_SCORE,
+  WILD_COUNT,
   bullHeads,
   deckSize,
+  isWild,
   previewPlay,
 } from './engine.js';
+import { TURN_SECONDS } from './timing.js';
 
 const STATUS_TEXT = {
   connecting: 'Connecting',
@@ -19,6 +30,21 @@ const STATUS_TEXT = {
   online: '',
   offline: 'Offline',
 };
+
+/**
+ * Whoever has the fewest bull heads right now. Nobody leads a table where
+ * nothing has been taken yet, and a tie leads jointly.
+ */
+function leaders(players) {
+  const best = Math.min(...players.map((p) => p.score));
+  const worst = Math.max(...players.map((p) => p.score));
+  if (worst === 0) return new Set();
+  return new Set(players.filter((p) => p.score === best).map((p) => p.id));
+}
+
+function clockSetting(seconds) {
+  return seconds > 0 ? `${seconds}s` : 'Off';
+}
 
 /* ------------------------------- home ------------------------------- */
 
@@ -149,7 +175,7 @@ export function renderLobby(app) {
       </div>
 
       <div class="stack">
-        <div class="label">Variant</div>
+        <div class="label">Variants</div>
         <button class="toggle" data-act="variant" aria-pressed="${s.proVariant}"
           ${s.isHost ? '' : 'disabled'}>
           <span>
@@ -158,6 +184,35 @@ export function renderLobby(app) {
           </span>
           <span class="toggle__box">${icon('check')}</span>
         </button>
+        <button class="toggle toggle--wild" data-act="wild" aria-pressed="${!!s.wildVariant}"
+          ${s.isHost ? '' : 'disabled'}>
+          <span>
+            <span class="toggle__name">${icon('bolt')}Wildcards</span><br />
+            <span class="toggle__hint">${WILD_COUNT} cards are dealt wild &middot; free to place, and
+              they go wherever you say</span>
+          </span>
+          <span class="toggle__box">${icon('check')}</span>
+        </button>
+      </div>
+
+      <div class="stack">
+        <div class="label">Turn clock</div>
+        <div class="stepper">
+          <span>
+            <span class="toggle__name">${icon('timer')}${clockSetting(s.turnSeconds)}</span><br />
+            <span class="toggle__hint">${
+              s.turnSeconds > 0
+                ? 'Per choice, then it is played for you'
+                : 'No limit; only dropouts are played for'
+            }</span>
+          </span>
+          <span class="stepper__btns">
+            <button class="icon-btn" data-act="clock" data-step="-1" aria-label="Less time"
+              ${s.isHost && s.turnSeconds !== TURN_SECONDS[0] ? '' : 'disabled'}>${icon('minus')}</button>
+            <button class="icon-btn" data-act="clock" data-step="1" aria-label="More time"
+              ${s.isHost && s.turnSeconds !== TURN_SECONDS[TURN_SECONDS.length - 1] ? '' : 'disabled'}>${icon('plus')}</button>
+          </span>
+        </div>
       </div>
     </div>
     <div class="pad stack">
@@ -186,11 +241,15 @@ export function renderGame(app) {
   const selecting = g.phase === 'select' && s.yourCard === null;
   const preview =
     selecting && app.selected !== null ? previewPlay(rows, app.selected) : null;
+  const choice = pendingChoice(g);
+  const wildPick = picking && choice && isWild(choice.card);
 
   const reveal = g.log.find((e) => e.t === 'reveal');
+  // The strip keeps its place even before the first reveal, so the board never
+  // jumps under a thumb that is already reaching for a card.
   const revealBlock = reveal
-    ? `<div class="reveal" id="reveal">${revealMarkup(reveal.cards, names, app.view.resolved)}</div>`
-    : '';
+    ? revealMarkup(reveal.cards, names, app.view.resolved)
+    : waitingMarkup(s.players);
 
   return `
     <div class="board">
@@ -210,27 +269,52 @@ export function renderGame(app) {
           ${rowsMarkup(rows, {
             pick: picking,
             sweep: app.view.sweep,
+            land: app.view.land,
             targetRow: preview && !preview.takes ? preview.row : undefined,
             hot: preview && preview.takes && preview.row >= 0 ? [preview.row] : [],
+            costly: wildPick
+              ? rows.map((r, i) => (r.length >= ROW_LIMIT ? i : -1)).filter((i) => i >= 0)
+              : [],
           })}
         </div>
 
-        ${revealBlock}
+        <div class="reveal${app.view.freshTrick ? ' is-fresh' : ''}" id="reveal">${revealBlock}</div>
       </div>
 
       <div class="status ${picking || selecting ? 'status--act' : ''}">
-        ${statusLine(app, s, g)}
+        <span class="status__text">${statusLine(app, s, g)}</span>
+        ${clockMarkup(s)}
       </div>
 
       <div class="hand-wrap">
         <div class="hint ${preview && preview.takes ? 'hint--warn' : ''}">
-          ${handHint(app, s, g, preview)}
+          ${handHint(app, s, g, preview, wildPick)}
         </div>
-        <div class="hand" id="hand">${hand(app, s, g)}</div>
+        <div class="hand${app.view.freshHand ? ' is-dealt' : ''}" id="hand">${hand(app, s, g)}</div>
         ${playButton(app, s, g, picking)}
       </div>
     </div>
   `;
+}
+
+/** The card whose owner is being asked to name a row, if anyone is. */
+function pendingChoice(g) {
+  if (g.phase !== 'choose_row') return null;
+  const marks = g.log.filter((e) => e.t === 'need_choice');
+  return marks.length ? marks[marks.length - 1] : null;
+}
+
+/**
+ * The turn clock. Only the shell is rendered: app.js ticks the numbers so the
+ * countdown does not force the whole board through a re-render every second.
+ */
+function clockMarkup(s) {
+  if (!s.turnSeconds || !s.deadlineAt) return '';
+  return `
+    <div class="clock" id="clock" aria-hidden="true">
+      <span class="clock__bar"><span class="clock__fill" id="clock-fill"></span></span>
+      <span class="clock__num num" id="clock-num">${s.turnSeconds}</span>
+    </div>`;
 }
 
 function connBadge(status) {
@@ -240,15 +324,18 @@ function connBadge(status) {
 }
 
 function roster(s) {
+  const ahead = leaders(s.players);
   return s.players
     .map((p) => {
       const cls = ['chip'];
       if (p.id === s.you) cls.push('chip--you');
       if (!p.connected) cls.push('chip--gone');
       if (p.hasSelected) cls.push('chip--ready');
+      if (ahead.has(p.id)) cls.push('chip--lead');
       return `
         <div class="${cls.join(' ')}">
           <span class="dot ${p.hasSelected ? 'dot--on' : 'dot--off'}"></span>
+          ${ahead.has(p.id) ? `<span class="chip__crown" title="Fewest bull heads">${icon('crown')}</span>` : ''}
           <span class="chip__name">${esc(p.name)}</span>
           <span class="chip__score">${BULL_GLYPH}<span class="num">${p.score}</span></span>
         </div>`;
@@ -259,8 +346,12 @@ function roster(s) {
 function statusLine(app, s, g) {
   if (!app.view.caughtUp) return 'Resolving';
   if (g.phase === 'choose_row') {
-    if (g.chooser === s.you) return 'Too low &mdash; take a row';
-    return `${esc(nameOf(s, g.chooser))} is taking a row`;
+    const choice = pendingChoice(g);
+    const wild = choice && isWild(choice.card);
+    if (g.chooser === s.you) {
+      return wild ? 'Wildcard &mdash; name a row' : 'Too low &mdash; take a row';
+    }
+    return `${esc(nameOf(s, g.chooser))} is ${wild ? 'placing a wildcard' : 'taking a row'}`;
   }
   if (g.phase === 'round_over') return 'Round complete';
   if (g.phase === 'game_over') return 'Game over';
@@ -279,13 +370,18 @@ function nameOf(s, id) {
   return p ? p.name : 'Someone';
 }
 
-function handHint(app, s, g, preview) {
+function handHint(app, s, g, preview, wildPick) {
   if (g.phase === 'choose_row' && g.chooser === s.you && app.view.caughtUp) {
-    return `${icon('warn')}<span>Tap a row to take it</span>`;
+    return wildPick
+      ? `${icon('bolt')}<span>Tap any row &middot; a full one costs you</span>`
+      : `${icon('warn')}<span>Tap a row to take it</span>`;
   }
   if (!preview) return '<span>&nbsp;</span>';
   // A preview of this card alone: a lower card from someone else resolves first
   // and can change where it lands.
+  if (preview.kind === 'wild') {
+    return `${icon('bolt')}<span>Wildcard &middot; resolves last, you pick the row</span>`;
+  }
   if (preview.kind === 'too_low') {
     return `${icon('warn')}<span>Below every row &middot; you take one</span>`;
   }
@@ -298,12 +394,12 @@ function handHint(app, s, g, preview) {
 function hand(app, s, g) {
   const locked = g.phase !== 'select' || s.yourCard !== null || !app.view.caughtUp;
   return s.hand
-    .map((card) => {
+    .map((card, i) => {
       const committed = s.yourCard === card;
       const sel = committed || app.selected === card;
-      return `<button class="hand__card" data-act="pick" data-card="${card}"
+      return `<button class="hand__card" data-act="pick" data-card="${card}" style="--i:${i}"
         ${locked ? 'disabled' : ''} aria-pressed="${sel}"
-        aria-label="Card ${card}, ${bullHeads(card)} bull heads">
+        aria-label="${cardLabel(card)}">
         ${cardFace(card, { sel })}
       </button>`;
     })
@@ -316,8 +412,9 @@ function playButton(app, s, g, picking) {
   }
   if (g.phase === 'select' && s.yourCard === null) {
     const ready = app.selected !== null && app.view.caughtUp;
+    const name = isWild(app.selected) ? 'the wildcard' : app.selected;
     return `<button class="btn btn--primary" data-act="play" ${ready ? '' : 'disabled'}>
-      <span>${app.selected === null ? 'Select a card' : `Play ${app.selected}`}</span>
+      <span>${app.selected === null ? 'Select a card' : `Play ${name}`}</span>
     </button>`;
   }
   if (g.phase === 'select') {
@@ -335,13 +432,17 @@ export function renderScores(app) {
   const over = g.phase === 'game_over';
   const ranked = s.players.slice().sort((a, b) => a.score - b.score);
   const winners = new Set(g.winners || []);
+  const ahead = over ? winners : leaders(s.players);
 
   const rows = ranked
     .map((p, i) => {
-      const win = over && winners.has(p.id);
+      const cls = ['score-row'];
+      if (over && winners.has(p.id)) cls.push('score-row--win');
+      if (ahead.has(p.id)) cls.push('score-row--lead');
       return `
-        <div class="score-row${win ? ' score-row--win' : ''}">
+        <div class="${cls.join(' ')}" style="--i:${i}">
           <span class="score-row__rank num">${i + 1}</span>
+          ${ahead.has(p.id) ? `<span class="score-row__crown">${icon('crown')}</span>` : ''}
           <span class="score-row__name">${esc(p.name)}${p.id === s.you ? ' &middot; you' : ''}</span>
           <span class="score-row__delta num">+${p.roundScore}</span>
           <span class="score-row__total num">${BULL_GLYPH}${p.score}</span>
@@ -404,18 +505,6 @@ export function renderSettings(app) {
             </div>`
           : ''
       }
-
-      <div class="stack">
-        <div class="label">Game server</div>
-        <input class="field" id="server-input" type="url" inputmode="url"
-          autocapitalize="off" autocorrect="off" spellcheck="false"
-          placeholder="https://your-worker.workers.dev" value="${esc(app.server)}" />
-        <div class="subtitle">
-          The board is static; rooms run on a Cloudflare Worker. Leave this alone
-          unless you are hosting your own.
-        </div>
-        <button class="btn btn--ghost" data-act="save-server"><span>Save</span></button>
-      </div>
     </div>
   `;
 }
@@ -458,6 +547,14 @@ export function rulesSheet() {
         <dt>Professional variant</dt>
         <dd>The deck is trimmed to ten cards per player plus the four starters, so
           nothing is left out of play and counting cards is possible.</dd>
+
+        <dt>Wildcards</dt>
+        <dd>An optional twist, and it combines with the professional variant.
+          ${WILD_COUNT} of the cards dealt out are wildcards: worth no bull heads,
+          they resolve after every numbered card in the trick, and their owner
+          names the row. A row with room takes one for nothing; a full row costs
+          you its five cards as usual. A wildcard has no number of its own, so
+          later cards read the row as ending on the highest number underneath.</dd>
       </dl>
       <button class="btn btn--ghost" data-act="close-sheet"><span>Close</span></button>
     </div>
@@ -467,6 +564,7 @@ export function rulesSheet() {
 export function standingsSheet(app) {
   const s = app.state;
   const ranked = s.players.slice().sort((a, b) => a.score - b.score);
+  const ahead = leaders(s.players);
   return `
     <div class="stack stack--lg">
       <div class="screen-head screen-head--bare">
@@ -477,8 +575,9 @@ export function standingsSheet(app) {
         ${ranked
           .map(
             (p, i) => `
-          <div class="score-row">
+          <div class="score-row${ahead.has(p.id) ? ' score-row--lead' : ''}" style="--i:${i}">
             <span class="score-row__rank num">${i + 1}</span>
+            ${ahead.has(p.id) ? `<span class="score-row__crown">${icon('crown')}</span>` : ''}
             <span class="score-row__name">${esc(p.name)}${p.connected ? '' : ' &middot; away'}</span>
             <span class="score-row__delta num">+${p.roundScore}</span>
             <span class="score-row__total num">${BULL_GLYPH}${p.score}</span>

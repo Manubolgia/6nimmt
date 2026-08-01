@@ -20,6 +20,12 @@
  *    reaches 66 bull heads; fewest bull heads wins.
  *  - Professional variant: the deck is trimmed to cards 1..(10 x players + 4),
  *    so every card in the deck is in play.
+ *
+ * One house rule is implemented alongside them, off by default and independent
+ * of the professional variant:
+ *  - Wildcard variant: three of the dealt cards are replaced by wildcards, which
+ *    are worth no bull heads, resolve after every numbered card, and are placed
+ *    on a row of their owner's choosing.
  */
 
 export const ROW_COUNT = 4;
@@ -29,9 +35,33 @@ export const TARGET_SCORE = 66;
 export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = 10;
 export const FULL_DECK = 104;
+export const WILD_COUNT = 3;
+
+/** Wildcards are negative so they can never collide with a printed number. */
+export function isWild(card) {
+  return card < 0;
+}
+
+/** Sort key: wildcards rank after every numbered card, in a stable order. */
+export function cardOrder(card) {
+  return isWild(card) ? FULL_DECK + 1 - card : card;
+}
+
+/**
+ * The value a row ends on. Wildcards carry no number of their own, so the
+ * highest numbered card still beneath them is what later cards compare against;
+ * a row holding nothing but wildcards ends on 0 and takes anything.
+ */
+export function rowEnd(row) {
+  for (let i = row.length - 1; i >= 0; i--) {
+    if (!isWild(row[i])) return row[i];
+  }
+  return 0;
+}
 
 /** Bull heads (penalty points) printed on a card. */
 export function bullHeads(card) {
+  if (isWild(card)) return 0;
   if (card === 55) return 7;
   if (card % 11 === 0) return 5;
   if (card % 10 === 0) return 3;
@@ -83,14 +113,15 @@ export function shuffle(deck, rng) {
 }
 
 /**
- * Index of the row a card must join, or -1 when the card is lower than every
- * row end and its owner has to take a row instead.
+ * Index of the row a numbered card must join, or -1 when the card is lower than
+ * every row end and its owner has to take a row instead. Wildcards never reach
+ * here: their owner always names the row.
  */
 export function targetRow(rows, card) {
   let best = -1;
   let bestEnd = -1;
   for (let i = 0; i < rows.length; i++) {
-    const end = rows[i][rows[i].length - 1];
+    const end = rowEnd(rows[i]);
     if (end < card && end > bestEnd) {
       bestEnd = end;
       best = i;
@@ -104,15 +135,29 @@ export function targetRow(rows, card) {
  * ------------------------------------------------------------------ */
 
 /**
+ * Replace `WILD_COUNT` of the cards that are about to be dealt with wildcards.
+ * They displace numbered cards rather than being added to the deck, so the deal
+ * still comes out at ten each plus four starters — and because only the dealt
+ * portion is touched, no row ever starts on a wildcard.
+ */
+function sowWildcards(deck, dealtCount, rng) {
+  const at = new Set();
+  while (at.size < WILD_COUNT) at.add(Math.floor(rng() * dealtCount));
+  let n = 1;
+  for (const i of at) deck[i] = -n++;
+}
+
+/**
  * Deal a fresh round. `players` is the ordered player list; each entry keeps
  * its running `score` across rounds.
  */
 export function dealRound(game, seed) {
   const rng = makeRng(seed);
   const deck = shuffle(buildDeck(game.players.length, game.proVariant), rng);
+  if (game.wildVariant) sowWildcards(deck, game.players.length * HAND_SIZE, rng);
   let at = 0;
   for (const p of game.players) {
-    p.hand = deck.slice(at, at + HAND_SIZE).sort((a, b) => a - b);
+    p.hand = deck.slice(at, at + HAND_SIZE).sort((a, b) => cardOrder(a) - cardOrder(b));
     at += HAND_SIZE;
     p.roundTaken = [];
   }
@@ -128,7 +173,7 @@ export function dealRound(game, seed) {
   return game;
 }
 
-export function createGame(players, proVariant, seed) {
+export function createGame(players, options, seed) {
   const game = {
     players: players.map((p) => ({
       id: p.id,
@@ -137,7 +182,8 @@ export function createGame(players, proVariant, seed) {
       hand: [],
       roundTaken: [],
     })),
-    proVariant: !!proVariant,
+    proVariant: !!(options && options.proVariant),
+    wildVariant: !!(options && options.wildVariant),
     rows: [],
     selections: {},
     pending: [],
@@ -184,7 +230,7 @@ export function resolveIfReady(game) {
   if (game.phase !== 'select' || !allSelected(game)) return false;
   const reveal = game.players
     .map((p) => ({ playerId: p.id, card: game.selections[p.id] }))
-    .sort((a, b) => a.card - b.card);
+    .sort((a, b) => cardOrder(a.card) - cardOrder(b.card));
   for (const entry of reveal) {
     const player = playerById(game, entry.playerId);
     player.hand = player.hand.filter((c) => c !== entry.card);
@@ -208,11 +254,17 @@ export function resolveIfReady(game) {
 function advance(game) {
   while (game.pending.length > 0) {
     const next = game.pending[0];
-    const row = targetRow(game.rows, next.card);
+    const wild = isWild(next.card);
+    const row = wild ? -1 : targetRow(game.rows, next.card);
     if (row === -1) {
       game.phase = 'choose_row';
       game.chooser = next.playerId;
-      game.log.push({ t: 'need_choice', playerId: next.playerId, card: next.card });
+      game.log.push({
+        t: 'need_choice',
+        playerId: next.playerId,
+        card: next.card,
+        reason: wild ? 'wild' : 'too_low',
+      });
       return;
     }
     game.pending.shift();
@@ -256,8 +308,9 @@ function takeRow(game, playerId, row, card, reason) {
 }
 
 /**
- * The player named by `game.chooser` takes `row`. Returns an error string or
- * null.
+ * The player named by `game.chooser` resolves their card into `row`: a card
+ * that was too low takes the row, a wildcard simply joins it unless the row is
+ * already full. Returns an error string or null.
  */
 export function chooseRow(game, playerId, row) {
   if (game.phase !== 'choose_row') return 'not_choosing';
@@ -266,7 +319,19 @@ export function chooseRow(game, playerId, row) {
   const next = game.pending.shift();
   game.chooser = null;
   game.phase = 'resolving';
-  takeRow(game, next.playerId, row, next.card, 'too_low');
+  if (isWild(next.card) && game.rows[row].length < ROW_LIMIT) {
+    game.rows[row].push(next.card);
+    game.log.push({
+      t: 'place',
+      playerId: next.playerId,
+      card: next.card,
+      row,
+      reason: 'wild',
+      rows: snapshot(game.rows),
+    });
+  } else {
+    takeRow(game, next.playerId, row, next.card, isWild(next.card) ? 'wild' : 'too_low');
+  }
   advance(game);
   return null;
 }
@@ -300,14 +365,18 @@ export function nextRound(game, seed) {
  * Helpers used by the UI and by auto-play for disconnected players
  * ------------------------------------------------------------------ */
 
-/** Row a bot/auto-play should take: the one with the fewest bull heads. */
-export function cheapestRow(rows) {
+/**
+ * Row a bot/auto-play should take. Normally the one with the fewest bull heads;
+ * a wildcard costs nothing at all unless the row is full, so it goes to the
+ * emptiest row instead.
+ */
+export function cheapestRow(rows, card) {
   let best = 0;
-  let bestBulls = Infinity;
+  let bestCost = Infinity;
   for (let i = 0; i < rows.length; i++) {
-    const bulls = bullTotal(rows[i]);
-    if (bulls < bestBulls) {
-      bestBulls = bulls;
+    const cost = isWild(card) ? rows[i].length : bullTotal(rows[i]);
+    if (cost < bestCost) {
+      bestCost = cost;
       best = i;
     }
   }
@@ -319,6 +388,7 @@ export function cheapestRow(rows) {
  * players' cards. Used for the client-side hint on the selected card.
  */
 export function previewPlay(rows, card) {
+  if (isWild(card)) return { row: -1, takes: false, bulls: 0, kind: 'wild' };
   const row = targetRow(rows, card);
   if (row === -1) return { row: -1, takes: true, bulls: null, kind: 'too_low' };
   if (rows[row].length >= ROW_LIMIT) {

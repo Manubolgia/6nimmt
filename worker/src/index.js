@@ -17,6 +17,11 @@ import {
   resolveIfReady,
   selectCard,
 } from '../../web/js/engine.js';
+import {
+  DEFAULT_TURN_SECONDS,
+  TURN_SECONDS,
+  trickAnimationMs,
+} from '../../web/js/timing.js';
 
 /* Unambiguous alphabet: no I/O/0/1. */
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -25,6 +30,8 @@ const SOCKET_PATH = /^\/api\/rooms\/([A-Za-z0-9]{1,8})\/socket$/;
 
 /** Grace period before a disconnected player's move is played for them. */
 const AUTO_PLAY_MS = 30_000;
+/** Alarms do not fire to the millisecond; treat this close as "due". */
+const ALARM_SLOP_MS = 250;
 /** Rooms with nobody connected are dropped after this long. */
 const ROOM_TTL_MS = 6 * 60 * 60 * 1000;
 
@@ -99,6 +106,11 @@ export class GameRoom {
     this.closing = null;
     ctx.blockConcurrencyWhile(async () => {
       this.room = (await ctx.storage.get('room')) || null;
+      // A room that was already open when the clock shipped keeps its default
+      // rather than reading as "off".
+      if (this.room && this.room.turnSeconds === undefined) {
+        this.room.turnSeconds = DEFAULT_TURN_SECONDS;
+      }
     });
   }
 
@@ -147,10 +159,16 @@ export class GameRoom {
 
     this.room.code = this.room.code || code;
     this.touch();
+    await this.settle();
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** Publish the room: refresh the clock, save, tell everyone, arm the alarm. */
+  async settle() {
+    this.refreshDeadline();
     await this.persist();
     this.broadcast();
     await this.scheduleAlarm();
-    return new Response(null, { status: 101, webSocket: client });
   }
 
   /** Reject before the handshake so the client sees a clean failure. */
@@ -170,10 +188,15 @@ export class GameRoom {
       lastActivity: Date.now(),
       hostId: null,
       proVariant: false,
+      wildVariant: false,
+      turnSeconds: DEFAULT_TURN_SECONDS,
       status: 'lobby',
       players: [],
       game: null,
       roundStartScores: {},
+      /** When the current action runs out, and what it is a deadline for. */
+      deadlineAt: null,
+      deadlineKey: null,
     };
   }
 
@@ -247,9 +270,7 @@ export class GameRoom {
       return;
     }
     this.touch();
-    await this.persist();
-    this.broadcast();
-    await this.scheduleAlarm();
+    await this.settle();
   }
 
   async webSocketClose(ws) {
@@ -265,11 +286,9 @@ export class GameRoom {
           if (room.hostId && !room.players.some((p) => p.id === room.hostId)) {
             room.hostId = room.players.length ? room.players[0].id : null;
           }
-          await this.persist();
         }
       }
-      this.broadcast();
-      await this.scheduleAlarm();
+      await this.settle();
     } finally {
       this.closing = null;
     }
@@ -308,6 +327,23 @@ export class GameRoom {
         room.proVariant = !!msg.proVariant;
         return null;
 
+      case 'setWild':
+        if (!isHost) return 'not_host';
+        if (room.status !== 'lobby') return 'already_started';
+        room.wildVariant = !!msg.wildVariant;
+        return null;
+
+      case 'setTurnSeconds': {
+        if (!isHost) return 'not_host';
+        if (!TURN_SECONDS.includes(msg.seconds)) return 'bad_turn_seconds';
+        room.turnSeconds = msg.seconds;
+        // Retune a clock that is already running rather than waiting for the
+        // next phase, so the change is visible straight away.
+        room.deadlineKey = null;
+        room.deadlineAt = null;
+        return null;
+      }
+
       case 'kick': {
         if (!isHost) return 'not_host';
         if (room.status !== 'lobby') return 'already_started';
@@ -327,7 +363,7 @@ export class GameRoom {
         if (!isHost) return 'not_host';
         if (room.status !== 'lobby') return 'already_started';
         if (room.players.length < MIN_PLAYERS) return 'need_more_players';
-        room.game = createGame(room.players, room.proVariant, randomSeed());
+        room.game = createGame(room.players, gameOptions(room), randomSeed());
         room.status = 'playing';
         room.roundStartScores = zeroScores(room.players);
         return null;
@@ -360,7 +396,7 @@ export class GameRoom {
       case 'rematch': {
         if (!isHost) return 'not_host';
         if (room.status !== 'finished') return 'not_finished';
-        room.game = createGame(room.players, room.proVariant, randomSeed());
+        room.game = createGame(room.players, gameOptions(room), randomSeed());
         room.status = 'playing';
         room.roundStartScores = zeroScores(room.players);
         return null;
@@ -414,6 +450,12 @@ export class GameRoom {
       code: room.code,
       status: room.status,
       proVariant: room.proVariant,
+      wildVariant: room.wildVariant,
+      turnSeconds: room.turnSeconds,
+      // Both stamps are the server's: the client counts down from their
+      // difference, so a phone with a wrong clock still shows the right number.
+      deadlineAt: room.deadlineAt,
+      now: Date.now(),
       you: playerId,
       isHost: host === playerId,
       target: TARGET_SCORE,
@@ -447,32 +489,66 @@ export class GameRoom {
     }
   }
 
-  /* ------------------------------ alarms ------------------------------ */
+  /* ------------------------- clock and alarms ------------------------- */
 
-  /** Players who owe an action right now but are not connected. */
-  stalled() {
+  /**
+   * Who owes an action right now: `all` is everybody the table is waiting on,
+   * `offline` only those who have dropped out.
+   */
+  owed() {
     const room = this.room;
-    if (!room || room.status !== 'playing' || !room.game) return [];
+    const none = { all: [], offline: [] };
+    if (!room || room.status !== 'playing' || !room.game) return none;
     const live = this.connectedIds();
     const game = room.game;
+    let all;
     if (game.phase === 'select') {
-      return game.players
-        .filter((p) => game.selections[p.id] === undefined && !live.has(p.id))
+      all = game.players
+        .filter((p) => game.selections[p.id] === undefined)
         .map((p) => p.id);
+    } else if (game.phase === 'choose_row' && game.chooser) {
+      all = [game.chooser];
+    } else {
+      return none;
     }
-    if (game.phase === 'choose_row' && game.chooser && !live.has(game.chooser)) {
-      return [game.chooser];
+    return { all, offline: all.filter((id) => !live.has(id)) };
+  }
+
+  /** Who the clock running out would play for. */
+  clockTargets() {
+    const owed = this.owed();
+    return this.room.turnSeconds > 0 ? owed.all : owed.offline;
+  }
+
+  /**
+   * Arm the turn clock for whatever the table is waiting on. The key pins the
+   * clock to one specific pending action, so re-broadcasting — or one player of
+   * several committing — never quietly extends it.
+   */
+  refreshDeadline() {
+    const room = this.room;
+    if (!room) return;
+    const game = room.game;
+    if (this.clockTargets().length === 0) {
+      room.deadlineAt = null;
+      room.deadlineKey = null;
+      return;
     }
-    return [];
+    const key =
+      game.phase === 'select' ? `t${game.trickId}` : `c${game.trickId}.${game.log.length}`;
+    if (room.deadlineKey === key && room.deadlineAt) return;
+    // Everyone is still watching the previous trick resolve; the clock starts
+    // when that animation ends, not when the server got there.
+    const lead = trickAnimationMs(game.log, game.players.length);
+    const budget = room.turnSeconds > 0 ? room.turnSeconds * 1000 : AUTO_PLAY_MS;
+    room.deadlineKey = key;
+    room.deadlineAt = Date.now() + lead + budget;
   }
 
   async scheduleAlarm() {
-    if (this.stalled().length > 0) {
-      await this.ctx.storage.setAlarm(Date.now() + AUTO_PLAY_MS);
-      return;
-    }
-    const idleAt = (this.room?.lastActivity || Date.now()) + ROOM_TTL_MS;
-    await this.ctx.storage.setAlarm(idleAt);
+    const at = [(this.room?.lastActivity || Date.now()) + ROOM_TTL_MS];
+    if (this.room?.deadlineAt) at.push(this.room.deadlineAt);
+    await this.ctx.storage.setAlarm(Math.min(...at));
   }
 
   async alarm() {
@@ -484,28 +560,37 @@ export class GameRoom {
       return;
     }
 
-    const game = this.room.game;
+    const room = this.room;
+    const game = room.game;
+    const due = game && room.deadlineAt && Date.now() >= room.deadlineAt - ALARM_SLOP_MS;
     let acted = false;
-    for (const id of this.stalled()) {
-      if (game.phase === 'select') {
-        const seat = game.players.find((p) => p.id === id);
-        if (seat && seat.hand.length) {
-          selectCard(game, id, seat.hand[0]); // hands are kept sorted ascending
+    if (due) {
+      for (const id of this.clockTargets()) {
+        if (game.phase === 'select') {
+          const seat = game.players.find((p) => p.id === id);
+          // Hands sort wildcards last, so this is the lowest numbered card.
+          if (seat && seat.hand.length) {
+            selectCard(game, id, seat.hand[0]);
+            acted = true;
+          }
+        } else if (game.phase === 'choose_row') {
+          const pending = game.pending[0];
+          chooseRow(game, id, cheapestRow(game.rows, pending && pending.card));
           acted = true;
         }
-      } else if (game.phase === 'choose_row') {
-        chooseRow(game, id, cheapestRow(game.rows));
-        acted = true;
       }
     }
     if (acted) {
       if (game.phase === 'select') resolveIfReady(game);
       this.syncStatus();
-      await this.persist();
-      this.broadcast();
+      room.deadlineKey = null;
     }
-    await this.scheduleAlarm();
+    await this.settle();
   }
+}
+
+function gameOptions(room) {
+  return { proVariant: room.proVariant, wildVariant: room.wildVariant };
 }
 
 function cleanName(raw) {

@@ -297,6 +297,13 @@ test('leaving the lobby frees the seat and moves the host on', async () => {
   assert.equal(b.state.isHost, true);
 });
 
+/** Wind the turn clock down to zero so the next alarm is actually due. */
+async function expireClock(room) {
+  assert.ok(room.room.deadlineAt, 'a turn clock should be running');
+  room.room.deadlineAt = Date.now() - 1;
+  await room.alarm();
+}
+
 test('a disconnected player is played for after the grace period', async () => {
   const { room, players } = await openGame(3);
   const [a, b, c] = players;
@@ -308,13 +315,13 @@ test('a disconnected player is played for after the grace period', async () => {
   assert.equal(b.state.game.trick, 1, 'the trick waits for the missing player');
   assert.ok(room.ctx.storage.alarm, 'an auto-play alarm is armed');
 
-  await room.alarm();
+  await expireClock(room);
   // If the auto-played card was the low one, the same alarm path has to take a
   // row for them too; connected players choose for themselves.
   for (let guard = 0; guard < 10; guard++) {
     const g = b.state.game;
     if (g.phase !== 'choose_row') break;
-    if (g.chooser === a.id) await room.alarm();
+    if (g.chooser === a.id) await expireClock(room);
     else await players.find((p) => p.id === g.chooser).send({ type: 'take', row: 0 });
   }
 
@@ -322,6 +329,86 @@ test('a disconnected player is played for after the grace period', async () => {
   assert.ok(
     reveal.cards.some((x) => x.playerId === 'p0' && x.card === lowest),
     'their lowest card was played for them',
+  );
+});
+
+/* ------------------------------ turn clock ---------------------------- */
+
+test('the clock is not up until it runs out', async () => {
+  const { room, players } = await openGame(3);
+  const before = players[0].state.game.trick;
+  await room.alarm();
+  assert.equal(players[0].state.game.trick, before, 'nobody was played for early');
+  assert.equal(players[0].state.yourCard, null);
+});
+
+test('the turn clock plays for whoever is still thinking', async () => {
+  const { room, players } = await openGame(3);
+  const [a, b, c] = players;
+  assert.equal(a.state.turnSeconds, 10, 'ten seconds by default');
+  const lowB = b.state.hand[0];
+  const lowC = c.state.hand[0];
+
+  await a.send({ type: 'play', card: a.state.hand[0] });
+  await expireClock(room);
+  await settleClock(room, players);
+
+  const reveal = a.state.game.log.find((e) => e.t === 'reveal');
+  assert.equal(reveal.cards.length, 3, 'the trick went ahead without them');
+  for (const [id, card] of [
+    ['p1', lowB],
+    ['p2', lowC],
+  ]) {
+    assert.ok(
+      reveal.cards.some((x) => x.playerId === id && x.card === card),
+      `${id} had their lowest card played`,
+    );
+  }
+});
+
+/** Resolve any row choice the clock left outstanding. */
+async function settleClock(room, players) {
+  for (let guard = 0; guard < 20; guard++) {
+    const g = players[0].state.game;
+    if (!g || g.phase !== 'choose_row') return;
+    await expireClock(room);
+  }
+  assert.fail('choose_row never cleared');
+}
+
+test('the host can retune the clock and turning it off spares the connected', async () => {
+  const { room, players } = await openGame(3);
+  const [a, b] = players;
+
+  await b.send({ type: 'setTurnSeconds', seconds: 20 });
+  assert.equal(b.errors.at(-1), 'not_host');
+  await a.send({ type: 'setTurnSeconds', seconds: 7 });
+  assert.equal(a.errors.at(-1), 'bad_turn_seconds', 'only the offered steps');
+
+  await a.send({ type: 'setTurnSeconds', seconds: 20 });
+  assert.equal(b.state.turnSeconds, 20);
+  assert.ok(b.state.deadlineAt - b.state.now > 15_000, 'the new clock took effect');
+
+  await a.send({ type: 'setTurnSeconds', seconds: 0 });
+  assert.equal(b.state.deadlineAt, null, 'nobody is on the clock with it off');
+  await room.alarm();
+  assert.equal(b.state.yourCard, null, 'a connected player is left to think');
+
+  await b.disconnect();
+  assert.ok(a.state.deadlineAt, 'a dropout still gets the old grace period');
+});
+
+test('the clock starts only once the previous trick has finished resolving', async () => {
+  const { players } = await openGame(4);
+  for (const p of players) await p.send({ type: 'play', card: p.state.hand[0] });
+  await settleChoices(players);
+
+  const s = players[0].state;
+  assert.equal(s.game.trick, 2);
+  const budget = s.deadlineAt - s.now;
+  assert.ok(
+    budget > 10_000,
+    `the ten seconds start after the animation, got ${budget}ms`,
   );
 });
 
