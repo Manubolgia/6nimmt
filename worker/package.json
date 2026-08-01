@@ -1,0 +1,15 @@
+{
+  "name": "6nimmt-server",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Cloudflare Worker + Durable Object game server for 6 nimmt!",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.14.0"
+  }
+}

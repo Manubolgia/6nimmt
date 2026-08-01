@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en" data-theme="">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>6 nimmt!</title>
+    <meta
+      name="description"
+      content="Online multiplayer 6 nimmt! for 2 to 10 players. Official rules, no accounts, install to your phone."
+    />
+    <meta name="theme-color" content="#17181a" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f2ede4" media="(prefers-color-scheme: light)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="6 nimmt!" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./icons/icon-32.png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="stylesheet" href="./css/app.css" />
+    <script>
+      // Apply the saved theme before first paint so a pinned light theme on a
+      // dark phone (or the reverse) never flashes the wrong colours.
+      try {
+        var t = localStorage.getItem('6nimmt.theme');
+        if (t === 'light' || t === 'dark') {
+          document.documentElement.setAttribute('data-theme', t);
+        }
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="app">
+      <section class="screen" id="screen-home" aria-label="Start"></section>
+      <section class="screen" id="screen-join" aria-label="Join a room"></section>
+      <section class="screen" id="screen-lobby" aria-label="Lobby"></section>
+      <section class="screen" id="screen-game" aria-label="Game"></section>
+      <section class="screen" id="screen-scores" aria-label="Scores"></section>
+      <section class="screen" id="screen-settings" aria-label="Settings"></section>
+      <div class="sheet" id="sheet" aria-hidden="true">
+        <div class="sheet__panel" id="sheet-panel"></div>
+      </div>
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    </div>
+    <noscript>
+      <p style="padding: 24px">
+        6 nimmt! needs JavaScript: the board, the rules and the connection to
+        your room all run in the browser.
+      </p>
+    </noscript>
+    <script type="module" src="./js/app.js"></script>
+  </body>
+</html>

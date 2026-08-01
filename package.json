@@ -1,0 +1,15 @@
+{
+  "name": "6nimmt",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Online multiplayer 6 nimmt! (Take 5) — installable PWA on GitHub Pages, rooms on Cloudflare Durable Objects.",
+  "scripts": {
+    "test": "node --test test/*.mjs",
+    "dev": "node tools/dev-server.mjs",
+    "icons": "node tools/gen-icons.mjs"
+  },
+  "devDependencies": {
+    "ws": "^8.18.0"
+  }
+}
