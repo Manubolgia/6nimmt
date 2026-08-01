@@ -5,3 +5,8 @@ node_modules/
 
 # scratch files from local verification runs
 *.tmp.mjs
+
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example

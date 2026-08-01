@@ -7,9 +7,12 @@
   "scripts": {
     "test": "node --test test/*.mjs",
     "dev": "node tools/dev-server.mjs",
-    "icons": "node tools/gen-icons.mjs"
+    "icons": "node tools/gen-icons.mjs",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   },
   "devDependencies": {
+    "wrangler": "^4.118.0",
     "ws": "^8.18.0"
   }
 }

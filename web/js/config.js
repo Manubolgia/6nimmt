@@ -6,7 +6,7 @@
  * runtime with ?server=https://... , which is persisted so testers can point a
  * hosted build at their own worker.
  */
-export const DEFAULT_SERVER = 'https://6nimmt.example.workers.dev';
+export const DEFAULT_SERVER = 'https://6nimmt.manuobelleiro00.workers.dev';
 
 const KEY = '6nimmt.server';
 
