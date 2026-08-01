@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+*.log
+.DS_Store
+
+# scratch files from local verification runs
+*.tmp.mjs
