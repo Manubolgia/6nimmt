@@ -14,6 +14,7 @@ import {
   HAND_SIZE,
   MAX_PLAYERS,
   MIN_PLAYERS,
+  ROW_COUNT,
   ROW_LIMIT,
   TARGET_SCORE,
   WILD_COUNT,
@@ -24,6 +25,7 @@ import {
   deckSize,
   isWild,
   negativeWilds,
+  pickableRows,
   previewPlay,
 } from './engine.js';
 import { TURN_SECONDS } from './timing.js';
@@ -193,8 +195,8 @@ export function renderLobby(app) {
           ${s.isHost ? '' : 'disabled'}>
           <span>
             <span class="toggle__name">${icon('bolt')}Wildcards</span><br />
-            <span class="toggle__hint">${WILD_COUNT} cards are dealt wild &middot; free to place, and
-              they go wherever you say</span>
+            <span class="toggle__hint">Cards worth no bull heads &middot; dealt to hands, or
+              seeded on the board, depending on the mode</span>
           </span>
           <span class="toggle__box">${icon('check')}</span>
         </button>
@@ -236,10 +238,10 @@ export function renderLobby(app) {
 
 /** What each wildcard mode is called, and what it does, in the lobby. */
 const WILD_MODE_TEXT = {
-  normal: ['Normal', 'Wildcards are simply worth nothing'],
+  normal: ['Normal', 'Wildcards are dealt to hands and are simply worth nothing'],
   negative: [
     'Negative',
-    'Each wildcard flips what its row is worth, so taking that row pays you back',
+    'Wildcards appear on the board instead, flipping their row so taking it pays you back — and a row that pays cannot be chosen',
   ],
 };
 
@@ -305,6 +307,9 @@ export function renderGame(app) {
           ${rowsMarkup(rows, {
             negative: neg,
             pick: picking,
+            allowed: picking
+              ? pickableRows(rows, neg, !!(choice && isWild(choice.card)))
+              : undefined,
             sweep: app.view.sweep,
             land: app.view.land,
             targetRow: preview && !preview.takes ? preview.row : undefined,
@@ -414,19 +419,26 @@ function nameOf(s, id) {
 function handHint(app, s, g, preview, wildPick, neg) {
   if (g.phase === 'choose_row' && g.chooser === s.you && app.view.caughtUp) {
     if (wildPick) {
-      return neg
-        ? `${icon('bolt')}<span>Tap any row &middot; a full one is yours, for better or worse</span>`
-        : `${icon('bolt')}<span>Tap any row &middot; a full one costs you</span>`;
+      return `${icon('bolt')}<span>Tap any row &middot; a full one costs you</span>`;
+    }
+    // In negative mode the rows that pay out are locked, unless they all do.
+    const locked =
+      neg && (app.view.rows || g.rows).filter((r) => bullTotal(r, neg) < 0).length;
+    if (locked) {
+      const open = pickableRows(app.view.rows || g.rows, neg, false).length;
+      if (open < ROW_COUNT) {
+        return `${icon('warn')}<span>Tap a row to take it &middot; a row that pays is
+          out of reach</span>`;
+      }
     }
     return `${icon('warn')}<span>Tap a row to take it</span>`;
   }
   if (!preview) return '<span>&nbsp;</span>';
   // A preview of this card alone: a lower card from someone else resolves first
   // and can change where it lands.
+  // Only normal mode ever puts a wildcard in a hand.
   if (preview.kind === 'wild') {
-    return neg
-      ? `${icon('bolt')}<span>Wildcard &middot; pick a row and turn it negative</span>`
-      : `${icon('bolt')}<span>Wildcard &middot; resolves last, you pick the row</span>`;
+    return `${icon('bolt')}<span>Wildcard &middot; resolves last, you pick the row</span>`;
   }
   if (preview.kind === 'too_low') {
     return `${icon('warn')}<span>Below every row &middot; you take one</span>`;
@@ -609,19 +621,26 @@ export function rulesSheet() {
           nothing is left out of play and counting cards is possible.</dd>
 
         <dt>Wildcards</dt>
-        <dd>An optional twist, and it combines with the professional variant.
-          ${WILD_COUNT} of the cards dealt out are wildcards: worth no bull heads,
-          they resolve after every numbered card in the trick, and their owner
-          names the row. A row with room takes one for nothing; a full row costs
-          you its five cards as usual. A wildcard has no number of its own, so
-          later cards read the row as ending on the highest number underneath.</dd>
+        <dd>An optional twist, and it combines with the professional variant. A
+          wildcard is worth no bull heads and has no number of its own, so later
+          cards read its row as ending on the highest number underneath. The two
+          modes are quite different games.</dd>
 
-        <dt>Wildcard mode</dt>
-        <dd>Normal leaves it there. In negative, each wildcard in a row multiplies
-          what that row is worth by &minus;1: take a row holding one and its bull
-          heads come off your score instead of going on, and two wildcards in the
-          same row cancel out. Scores can go below zero, and the game still ends
-          after the round in which somebody reaches ${TARGET_SCORE}.</dd>
+        <dt>Normal mode</dt>
+        <dd>${WILD_COUNT} of the cards dealt out are wildcards. They resolve after
+          every numbered card in the trick and their owner names the row: one with
+          room takes it for nothing, a full one costs you its five cards as usual.</dd>
+
+        <dt>Negative mode</dt>
+        <dd>No wildcard is ever dealt. Instead one may appear on the board by
+          itself, as the second card of a row that has just been reduced to a
+          single card &mdash; at the deal, and again each time a row is taken. Each
+          wildcard in a row multiplies what that row is worth by &minus;1, so
+          taking it pays those bull heads back, and two in one row cancel out.
+          Because such a row is a prize, you may not pick it when a card too low to
+          place lets you take a row: the only way in is the sixth card. Scores can
+          go below zero, and the game still ends after the round in which somebody
+          reaches ${TARGET_SCORE}.</dd>
       </dl>
       <button class="btn btn--ghost" data-act="close-sheet"><span>Close</span></button>
     </div>

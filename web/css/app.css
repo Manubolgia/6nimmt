@@ -825,6 +825,17 @@ svg {
   animation: pulse 1.4s var(--ease) infinite;
 }
 
+/* Negative mode: a row that pays out cannot be claimed, only walked into with a
+   sixth card, so while picking it is dimmed and its button is inert. */
+.row--locked {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.row--locked .row__bulls {
+  animation: none;
+}
+
 /* Negative mode: a row a wildcard has flipped pays out instead of costing. */
 .row--pays .row__bulls {
   border-color: var(--wild);

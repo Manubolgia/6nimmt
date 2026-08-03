@@ -16,7 +16,11 @@ import {
   bullTotal,
   cheapestRow,
   chooseRow,
+  MAX_NEGATIVE_ROWS,
+  allowedRows,
   cleanWildMode,
+  negativeRowCount,
+  pickableRows,
   createGame,
   deckSize,
   isWild,
@@ -379,7 +383,11 @@ test('taking a negative row pays bull heads back and can go below zero', () => {
   assert.equal(bullTotal([41, 42, -1, 43, 46]), 4, 'four one-head cards');
   assert.equal(game.players[0].score, -4, 'the sixth card is paid, not charged');
   assert.equal(game.log.find((e) => e.t === 'take').bulls, -4);
-  assert.deepEqual(game.rows[3], [47], 'the row still restarts on the card played');
+  assert.equal(game.rows[3][0], 47, 'the row still restarts on the card played');
+  // The restarted row is back to one card, so it takes its own seeding roll and
+  // may come back with a fresh wildcard already on it.
+  assert.ok(game.rows[3].length <= 2);
+  if (game.rows[3].length === 2) assert.ok(isWild(game.rows[3][1]));
 });
 
 test('the same row in normal mode still costs its owner', () => {
@@ -433,8 +441,67 @@ test('preview and auto-play read a negative row as the prize it is', () => {
     'a flipped row grows cheaper for whoever takes it',
   );
 
-  assert.equal(cheapestRow(rows, 1, true), 1, 'auto-play takes the row that pays');
+  assert.equal(
+    cheapestRow(rows, 1, true),
+    2,
+    'the row that pays is off limits, so auto-play takes the cheapest of the rest',
+  );
   assert.equal(cheapestRow(rows, 1), 2, 'in normal mode it takes the smallest');
+  // A board where every row pays is never dealt — MAX_NEGATIVE_ROWS forbids it —
+  // but the restriction still has to lift rather than strand the chooser.
+  assert.deepEqual(
+    pickableRows([[10, -1], [20, -2], [50, -3], [70, -4]], true, false),
+    [0, 1, 2, 3],
+  );
+});
+
+test('a row that pays out cannot be chosen, only walked into', () => {
+  const game = newGame(2, false, 5, true, 'negative');
+  //           pays 3 back  costs 3  costs 2  costs 3
+  game.rows = [[30, -1], [40], [50], [60]];
+  game.players[0].hand = [2];
+  game.players[1].hand = [70];
+  selectCard(game, 'p0', 2);
+  selectCard(game, 'p1', 70);
+  resolveIfReady(game);
+
+  assert.equal(game.phase, 'choose_row', 'card 2 is below every row');
+  assert.equal(game.chooser, 'p0');
+  assert.deepEqual(allowedRows(game, 2), [1, 2, 3], 'the paying row is out');
+  assert.equal(chooseRow(game, 'p0', 0), 'row_not_pickable');
+  assert.equal(game.players[0].score, 0, 'the refused choice changed nothing');
+  assert.equal(game.phase, 'choose_row', 'and it is still their turn');
+
+  assert.equal(chooseRow(game, 'p0', 1), null, 'a costing row is fine');
+  assert.equal(game.players[0].score, 3, 'card 40 is three bull heads');
+});
+
+test('the sixth card still walks into a paying row', () => {
+  const game = newGame(2, false, 5, true, 'negative');
+  game.rows = [[1], [2], [3], [41, 42, -1, 43, 46]];
+  game.players[0].hand = [47];
+  game.players[1].hand = [4];
+  selectCard(game, 'p0', 47);
+  selectCard(game, 'p1', 4);
+  resolveIfReady(game);
+  assert.equal(
+    game.players[0].score,
+    -4,
+    'no choice was involved, so the restriction does not apply',
+  );
+});
+
+test('at most three rows can be paying out at once', () => {
+  // Every row is dealt a single card and rolled for, over and over: the cap has
+  // to hold on every board, or a chooser could be left with nowhere legal to go.
+  for (let seed = 1; seed <= 400; seed++) {
+    const game = newGame(4, false, seed, true, 'negative');
+    assert.ok(
+      negativeRowCount(game.rows, true) <= MAX_NEGATIVE_ROWS,
+      `seed ${seed} dealt ${negativeRowCount(game.rows, true)} paying rows`,
+    );
+    assert.ok(pickableRows(game.rows, true, false).length >= 1);
+  }
 });
 
 test('negative games hold their invariants too', () => {
@@ -475,7 +542,11 @@ function simulate(playerCount, proVariant, seed, wildVariant = false, wildMode =
       resolveIfReady(game);
       if (game.trick !== before || game.phase !== 'select') tricks += 1;
     } else if (game.phase === 'choose_row') {
-      assert.equal(chooseRow(game, game.chooser, Math.floor(rng() * ROW_COUNT)), null);
+      // Only rows the rules allow: in negative mode a row that pays out cannot
+      // be claimed, so picking blind would be rejected.
+      const open = allowedRows(game, game.pending[0] && game.pending[0].card);
+      const row = open[Math.floor(rng() * open.length)];
+      assert.equal(chooseRow(game, game.chooser, row), null);
     } else if (game.phase === 'round_over') {
       rounds += 1;
       checkConservation(game, inDeck);
@@ -491,6 +562,16 @@ function simulate(playerCount, proVariant, seed, wildVariant = false, wildMode =
     // Invariants that must hold after every single action.
     for (const row of game.rows) {
       assert.ok(row.length >= 1 && row.length <= ROW_LIMIT);
+    }
+    if (negativeWilds(game)) {
+      assert.ok(
+        negativeRowCount(game.rows, true) <= MAX_NEGATIVE_ROWS,
+        'a row is always left claimable',
+      );
+      // No wildcard is ever dealt in negative mode, so none can be held back.
+      for (const p of game.players) {
+        assert.ok(!p.hand.some(isWild), 'negative mode deals no wildcards');
+      }
     }
     const seen = new Set();
     for (const row of game.rows) {
@@ -520,14 +601,27 @@ function simulate(playerCount, proVariant, seed, wildVariant = false, wildMode =
   return { rounds, tricks, game };
 }
 
-/** No bull head is created or lost: table + taken must equal what was dealt. */
+/**
+ * No numbered card is created or lost: table + taken must equal what was dealt.
+ * Seeded wildcards are counted separately — negative mode conjures them onto the
+ * board mid-round, so they are not part of the deal — but they must still be
+ * distinct and never appear twice.
+ */
 function checkConservation(game, inDeck) {
   const onTable = game.rows.flat();
   const taken = game.players.flatMap((p) => p.roundTaken);
-  const all = onTable.concat(taken).sort((a, b) => a - b);
+  const all = onTable.concat(taken);
+  assert.equal(new Set(all).size, all.length, 'no duplicates');
+  const wilds = all.filter(isWild).length;
   const expected = game.players.length * HAND_SIZE + ROW_COUNT;
-  assert.equal(all.length, expected, 'every dealt card is on the table or taken');
-  assert.equal(new Set(all).size, expected, 'no duplicates');
+  // Negative mode seeds wildcards onto the board as the round runs, so the count
+  // is the deal plus however many turned up; every other mode deals a fixed set.
+  const conjured = negativeWilds(game) ? wilds : 0;
+  assert.equal(
+    all.length - conjured,
+    expected,
+    'every dealt card is on the table or taken',
+  );
   for (const c of all) assert.ok(inDeck(c), `card ${c} is not in the deck`);
 }
 

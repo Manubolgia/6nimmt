@@ -5,7 +5,7 @@
  * cross-origin (the Durable Object WebSocket and its HTTP endpoints) is left
  * entirely alone.
  */
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE = `6nimmt-${VERSION}`;
 
 const SHELL = [

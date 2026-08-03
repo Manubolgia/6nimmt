@@ -22,13 +22,19 @@
  *    so every card in the deck is in play.
  *
  * One house rule is implemented alongside them, off by default and independent
- * of the professional variant:
- *  - Wildcard variant: three of the dealt cards are replaced by wildcards, which
- *    are worth no bull heads, resolve after every numbered card, and are placed
- *    on a row of their owner's choosing. It runs in one of two modes:
- *      normal   — a wildcard is worth nothing, and nothing more;
- *      negative — every wildcard in a row multiplies what the row is worth by
- *                 -1, so taking a row can pay bull heads back.
+ * of the professional variant. It runs in one of two modes, which are two quite
+ * different games:
+ *  - normal   — three of the dealt cards are replaced by wildcards. They are
+ *               worth no bull heads, resolve after every numbered card, and are
+ *               placed on a row of their owner's choosing.
+ *  - negative — no wildcard is ever dealt. Instead a wildcard may appear on the
+ *               board by itself, seeded as the second card of any row that has
+ *               just been reduced to a single card (at the deal, and after every
+ *               take). Each wildcard in a row multiplies what that row is worth
+ *               by -1, so taking that row pays bull heads back. Because such a
+ *               row is a prize, nobody may *choose* it when a card too low to
+ *               place lets them take a row; the only way into it is being caught
+ *               by it with the sixth card.
  */
 
 export const ROW_COUNT = 4;
@@ -42,6 +48,19 @@ export const WILD_COUNT = 3;
 /** Wildcard modes, in the order the lobby offers them. */
 export const WILD_MODES = ['normal', 'negative'];
 export const DEFAULT_WILD_MODE = 'normal';
+/**
+ * Negative mode: the chance, rolled once per row whenever that row is down to a
+ * single card, that a wildcard is seeded into it as its second card.
+ */
+export const WILD_SEED_CHANCE = 0.35;
+/** Negative mode seeds wildcards into the second slot of a row. */
+export const WILD_SEED_SLOT = 1;
+/**
+ * At most this many rows may be paying out at once. One row always has to be
+ * left claimable, or a player holding a card too low to place would have nowhere
+ * legal to go.
+ */
+export const MAX_NEGATIVE_ROWS = ROW_COUNT - 1;
 
 /** Anything unrecognised falls back to the plain mode. */
 export function cleanWildMode(mode) {
@@ -111,6 +130,41 @@ export function bullTotal(cards, negative) {
   return total * wildSign(cards, negative) || 0;
 }
 
+/**
+ * Whether a row may be chosen by a player whose card was too low to place.
+ * In negative mode a row that pays out is a prize, so it is off limits: the only
+ * way to collect one is to be caught by it with the sixth card. Every row is
+ * open in every other case, and a row is never off limits to a wildcard being
+ * placed on it, which is what `wild` says.
+ */
+export function rowPickable(row, negative, wild) {
+  if (!negative || wild) return true;
+  return bullTotal(row, negative) >= 0;
+}
+
+/**
+ * The rows a chooser is actually allowed to take, as indices. Never empty:
+ * `MAX_NEGATIVE_ROWS` already keeps one row claimable, so the fallback here only
+ * covers a board assembled by hand rather than dealt.
+ */
+export function pickableRows(rows, negative, wild) {
+  const out = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (rowPickable(rows[i], negative, wild)) out.push(i);
+  }
+  if (out.length > 0) return out;
+  return rows.map((_, i) => i);
+}
+
+/**
+ * The rows this game's current chooser may take, given the card they are
+ * resolving. The one place the restriction is decided, so the server, the board
+ * and auto-play can never disagree about which rows are open.
+ */
+export function allowedRows(game, card) {
+  return pickableRows(game.rows, negativeWilds(game), isWild(card));
+}
+
 /** Highest card number in play for a given player count and variant. */
 export function deckSize(playerCount, proVariant) {
   if (!proVariant) return FULL_DECK;
@@ -174,6 +228,9 @@ export function targetRow(rows, card) {
  * They displace numbered cards rather than being added to the deck, so the deal
  * still comes out at ten each plus four starters — and because only the dealt
  * portion is touched, no row ever starts on a wildcard.
+ *
+ * Normal mode only; negative mode never deals a wildcard, it seeds them onto the
+ * board instead — see `seedWildcards`.
  */
 function sowWildcards(deck, dealtCount, rng) {
   const at = new Set();
@@ -183,13 +240,73 @@ function sowWildcards(deck, dealtCount, rng) {
 }
 
 /**
+ * Seeded wildcards are identified apart from each other only so that two in one
+ * row stay distinct cards; the counter runs for the life of the game.
+ */
+function nextWildId(game) {
+  game.wildSeq = (game.wildSeq || 0) + 1;
+  return -game.wildSeq;
+}
+
+/**
+ * The roll that decides whether a freshly emptied row gets a wildcard. Drawn
+ * from a stream seeded by the round's own seed, and stepped by a counter kept on
+ * the game, so the sequence is reproducible from the stored state alone rather
+ * than depending on when the function happened to be called.
+ */
+function seedRoll(game) {
+  game.wildRolls = (game.wildRolls || 0) + 1;
+  return makeRng(((game.wildSeed || 0) + game.wildRolls * 0x9e3779b9) >>> 0)();
+}
+
+/** How many rows are currently paying out rather than costing. */
+export function negativeRowCount(rows, negative) {
+  let n = 0;
+  for (const row of rows) {
+    if (bullTotal(row, negative) < 0) n += 1;
+  }
+  return n;
+}
+
+/**
+ * Roll for a wildcard in the second slot of a single-card row, and seed one if
+ * the roll succeeds and the board has room for another paying row. Returns true
+ * when a wildcard was planted.
+ */
+function trySeedRow(game, index) {
+  const row = game.rows[index];
+  if (row.length !== 1 || isWild(row[0])) return false;
+  // The cap is what keeps a chooser from being locked out: with one row always
+  // claimable, the pick restriction can never leave them nowhere to go.
+  if (negativeRowCount(game.rows, true) >= MAX_NEGATIVE_ROWS) return false;
+  if (seedRoll(game) >= WILD_SEED_CHANCE) return false;
+  row.push(nextWildId(game));
+  return true;
+}
+
+/**
+ * Negative mode: give every row that sits on a single card a chance of a
+ * wildcard in its second slot. Called at the deal; after a take only the row
+ * that was just cleared is rolled for. Rows that already hold more than their
+ * starter are left alone.
+ */
+function seedWildcards(game) {
+  if (!negativeWilds(game)) return;
+  for (let i = 0; i < game.rows.length; i++) trySeedRow(game, i);
+}
+
+/**
  * Deal a fresh round. `players` is the ordered player list; each entry keeps
  * its running `score` across rounds.
  */
 export function dealRound(game, seed) {
   const rng = makeRng(seed);
   const deck = shuffle(buildDeck(game.players.length, game.proVariant), rng);
-  if (game.wildVariant) sowWildcards(deck, game.players.length * HAND_SIZE, rng);
+  // Negative mode keeps wildcards out of every hand: they only ever arrive on
+  // the board, so they cannot be hoarded for the last trick.
+  if (game.wildVariant && !negativeWilds(game)) {
+    sowWildcards(deck, game.players.length * HAND_SIZE, rng);
+  }
   let at = 0;
   for (const p of game.players) {
     p.hand = deck.slice(at, at + HAND_SIZE).sort((a, b) => cardOrder(a) - cardOrder(b));
@@ -198,6 +315,11 @@ export function dealRound(game, seed) {
   }
   game.rows = [];
   for (let i = 0; i < ROW_COUNT; i++) game.rows.push([deck[at++]]);
+  // The seeding stream belongs to the round, so a round replays identically from
+  // its seed; the wildcard ids keep counting up across rounds.
+  game.wildSeed = seed >>> 0;
+  game.wildRolls = 0;
+  seedWildcards(game);
   game.selections = {};
   game.pending = [];
   game.chooser = null;
@@ -224,6 +346,9 @@ export function createGame(players, options, seed) {
     selections: {},
     pending: [],
     chooser: null,
+    wildSeq: 0,
+    wildSeed: 0,
+    wildRolls: 0,
     round: 1,
     trick: 1,
     trickId: 0,
@@ -333,6 +458,9 @@ function takeRow(game, playerId, row, card, reason) {
   player.score += bulls;
   player.roundTaken = player.roundTaken.concat(taken);
   game.rows[row] = [card];
+  // The row is back to a single card, so in negative mode it gets its own roll
+  // for a fresh wildcard before the snapshot the clients animate against.
+  if (negativeWilds(game)) trySeedRow(game, row);
   game.log.push({
     t: 'take',
     playerId,
@@ -354,6 +482,11 @@ export function chooseRow(game, playerId, row) {
   if (game.phase !== 'choose_row') return 'not_choosing';
   if (game.chooser !== playerId) return 'not_your_choice';
   if (!Number.isInteger(row) || row < 0 || row >= ROW_COUNT) return 'bad_row';
+  const pick = game.pending[0];
+  // A row that pays out cannot simply be claimed — unless every row does, in
+  // which case somebody still has to take one and the rule steps aside.
+  const allowed = allowedRows(game, pick && pick.card);
+  if (!allowed.includes(row)) return 'row_not_pickable';
   const next = game.pending.shift();
   game.chooser = null;
   game.phase = 'resolving';
@@ -405,14 +538,19 @@ export function nextRound(game, seed) {
 
 /**
  * Row a bot/auto-play should take. Normally the one with the fewest bull heads —
- * in negative mode that may be a row that pays out. A wildcard costs nothing at
- * all unless the row is full, so among the rows with room it takes the emptiest.
+ * in negative mode that may be a row that pays out, on the rare board where every
+ * row does and the restriction has lifted. A wildcard costs nothing at all unless
+ * the row is full, so among the rows with room it takes the emptiest.
+ *
+ * Only ever returns a row the rules would actually accept, so the turn clock
+ * cannot play an illegal choice on a disconnected player's behalf.
  */
 export function cheapestRow(rows, card, negative) {
-  let best = 0;
+  const allowed = pickableRows(rows, negative, isWild(card));
+  let best = allowed[0];
   let bestCost = Infinity;
   let bestLen = Infinity;
-  for (let i = 0; i < rows.length; i++) {
+  for (const i of allowed) {
     const free = isWild(card) && rows[i].length < ROW_LIMIT;
     const cost = free ? 0 : bullTotal(rows[i], negative);
     const len = rows[i].length;

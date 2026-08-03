@@ -66,6 +66,13 @@ Ties for the win are reported as ties; nobody is broken out arbitrarily.
 An optional house rule, off by default and independent of the professional
 variant — the two combine.
 
+A wildcard is worth no bull heads and carries no number of its own, so later
+cards read its row as ending on the highest number underneath it. Where
+wildcards come from, and what they do, depends on the mode chosen next to the
+toggle in the lobby — the two are quite different games.
+
+### Normal
+
 Three of the cards dealt out are wildcards. They replace numbered cards rather
 than being added to the deck, so the deal is still ten each plus four starters,
 and a row never begins on one.
@@ -76,28 +83,40 @@ and a row never begins on one.
 | Order | wildcards resolve after every numbered card in the trick |
 | Placing | the owner names any row; the wildcard joins it for nothing |
 | Full row | naming a row that already holds five takes it, as a sixth card would |
-| Afterwards | a wildcard has no number, so later cards read the row as ending on the highest number underneath it — a row holding only wildcards ends on nothing and is the last resort |
+| Afterwards | a row holding only wildcards ends on nothing and is the last resort |
 
 The effect is that a wildcard is an escape from a bad hand, and a way to leave
 somebody else a row they cannot avoid.
 
-### Normal and negative
+### Negative
 
-Wildcards run in one of two modes, chosen next to the toggle in the lobby.
+No wildcard is ever dealt. They appear on the board by themselves instead:
+whenever a row is down to a single card — at the deal, and again every time a
+row is taken — that row is rolled for, and on a hit a wildcard is planted as its
+second card. Players play *around* them rather than with them.
 
 | | |
 |---|---|
-| Normal | a wildcard is worth nothing, and nothing more |
-| Negative | each wildcard in a row multiplies what that row is worth by −1 |
+| Chance | 35% per row, rolled each time that row is reduced to one card |
+| Position | always the second card of the row |
+| Worth | each wildcard in a row multiplies what that row is worth by −1 |
+| Cap | at most 3 rows may be paying out at once |
+| Choosing | a row that pays out **cannot be chosen** by a player whose card was too low to place |
 
-In negative mode, taking a row that holds a wildcard pays its bull heads back
-instead of charging them, so a score can fall — below zero, if the round goes
-that way. Two wildcards in the same row cancel and it costs again, as a third
-would flip it back. Everything else is unchanged: the game still ends after the
-round in which somebody reaches 66, and the fewest bull heads still wins.
+Taking a row that holds a wildcard pays its bull heads back instead of charging
+them, so a score can fall — below zero, if the round goes that way. Two
+wildcards in the same row cancel and it costs again, as a third would flip it
+back.
 
-Placing a wildcard therefore becomes an offer as much as a threat — the row you
-turn negative is a prize for whoever gets to it first, which may not be you.
+Because a paying row is a prize rather than a penalty, it is off limits to
+anyone *choosing* a row: the only way into one is to be caught by it with the
+sixth card. That is what makes the negative rows worth playing around — they sit
+there as traps you steer other people into, and since wildcards are never in
+anybody's hand they cannot be hoarded for the last trick. The cap of three
+guarantees at least one row stays claimable, so a low card is never stranded.
+
+Everything else is unchanged: the game still ends after the round in which
+somebody reaches 66, and the fewest bull heads still wins.
 
 ## Architecture
 

@@ -67,7 +67,8 @@ export function waitingMarkup(players) {
  * The four rows.
  * @param {number[][]} rows
  * @param {{negative?: boolean, pick?: boolean, targetRow?: number, hot?: number[],
- *          sweep?: number, land?: {row: number, slot: number}, costly?: number[]}} opts
+ *          sweep?: number, land?: {row: number, slot: number}, costly?: number[],
+ *          allowed?: number[]}} opts
  *   negative  — negative wildcard mode: a row's total is signed by its wildcards
  *   pick      — rows are tappable (the player must take one)
  *   targetRow — row the currently selected card would join
@@ -75,14 +76,18 @@ export function waitingMarkup(players) {
  *   sweep     — row whose cards are fading out on their way to a player
  *   land      — the card that has just this moment been placed
  *   costly    — rows that would cost bull heads to pick right now
+ *   allowed   — while picking, the only rows the rules will accept; the rest are
+ *               shown locked. Absent means every row is open.
  */
 export function rowsMarkup(rows, opts = {}) {
   const costly = opts.costly || [];
   return rows
     .map((row, i) => {
       const cls = ['row'];
-      if (opts.pick) cls.push('row--pick');
-      if (opts.pick || (opts.hot || []).includes(i)) cls.push('row--hot');
+      const locked = opts.pick && opts.allowed !== undefined && !opts.allowed.includes(i);
+      if (opts.pick && !locked) cls.push('row--pick');
+      if ((opts.pick && !locked) || (opts.hot || []).includes(i)) cls.push('row--hot');
+      if (locked) cls.push('row--locked');
       if (opts.sweep === i) cls.push('row--swept');
       if (costly.includes(i)) cls.push('row--costly');
       const total = bullTotal(row, opts.negative);
@@ -108,7 +113,8 @@ export function rowsMarkup(rows, opts = {}) {
       const read =
         total < 0 ? `${Math.abs(total)} bull heads back` : `${total} bull heads`;
       const label = opts.pick
-        ? `<button class="row__bulls" data-row="${i}" aria-label="Take row ${i + 1}, ${read}">${BULL_GLYPH}<span class="num">${shown}</span></button>`
+        ? `<button class="row__bulls" data-row="${i}" ${locked ? 'disabled' : ''}
+            aria-label="${locked ? `Row ${i + 1} pays ${read} and cannot be taken` : `Take row ${i + 1}, ${read}`}">${BULL_GLYPH}<span class="num">${shown}</span></button>`
         : `<div class="row__bulls">${BULL_GLYPH}<span class="num">${shown}</span></div>`;
       return `<div class="${cls.join(' ')}" data-row-index="${i}">${label}${slots.join('')}</div>`;
     })
