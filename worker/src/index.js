@@ -10,9 +10,12 @@ import {
   MAX_PLAYERS,
   MIN_PLAYERS,
   TARGET_SCORE,
+  WILD_MODES,
   chooseRow,
   cheapestRow,
+  cleanWildMode,
   createGame,
+  negativeWilds,
   nextRound,
   resolveIfReady,
   selectCard,
@@ -189,6 +192,7 @@ export class GameRoom {
       hostId: null,
       proVariant: false,
       wildVariant: false,
+      wildMode: 'normal',
       turnSeconds: DEFAULT_TURN_SECONDS,
       status: 'lobby',
       players: [],
@@ -333,6 +337,13 @@ export class GameRoom {
         room.wildVariant = !!msg.wildVariant;
         return null;
 
+      case 'setWildMode':
+        if (!isHost) return 'not_host';
+        if (room.status !== 'lobby') return 'already_started';
+        if (!WILD_MODES.includes(msg.wildMode)) return 'bad_wild_mode';
+        room.wildMode = msg.wildMode;
+        return null;
+
       case 'setTurnSeconds': {
         if (!isHost) return 'not_host';
         if (!TURN_SECONDS.includes(msg.seconds)) return 'bad_turn_seconds';
@@ -451,6 +462,7 @@ export class GameRoom {
       status: room.status,
       proVariant: room.proVariant,
       wildVariant: room.wildVariant,
+      wildMode: cleanWildMode(room.wildMode),
       turnSeconds: room.turnSeconds,
       // Both stamps are the server's: the client counts down from their
       // difference, so a phone with a wrong clock still shows the right number.
@@ -575,7 +587,11 @@ export class GameRoom {
           }
         } else if (game.phase === 'choose_row') {
           const pending = game.pending[0];
-          chooseRow(game, id, cheapestRow(game.rows, pending && pending.card));
+          chooseRow(
+            game,
+            id,
+            cheapestRow(game.rows, pending && pending.card, negativeWilds(game)),
+          );
           acted = true;
         }
       }
@@ -590,7 +606,11 @@ export class GameRoom {
 }
 
 function gameOptions(room) {
-  return { proVariant: room.proVariant, wildVariant: room.wildVariant };
+  return {
+    proVariant: room.proVariant,
+    wildVariant: room.wildVariant,
+    wildMode: cleanWildMode(room.wildMode),
+  };
 }
 
 function cleanName(raw) {

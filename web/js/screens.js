@@ -17,9 +17,13 @@ import {
   ROW_LIMIT,
   TARGET_SCORE,
   WILD_COUNT,
+  WILD_MODES,
   bullHeads,
+  bullTotal,
+  cleanWildMode,
   deckSize,
   isWild,
+  negativeWilds,
   previewPlay,
 } from './engine.js';
 import { TURN_SECONDS } from './timing.js';
@@ -32,13 +36,14 @@ const STATUS_TEXT = {
 };
 
 /**
- * Whoever has the fewest bull heads right now. Nobody leads a table where
- * nothing has been taken yet, and a tie leads jointly.
+ * Whoever has the fewest bull heads right now. Nobody leads a table where every
+ * score is still level — including one where nothing has been taken yet — and a
+ * tie for the lowest leads jointly.
  */
 function leaders(players) {
   const best = Math.min(...players.map((p) => p.score));
   const worst = Math.max(...players.map((p) => p.score));
-  if (worst === 0) return new Set();
+  if (best === worst) return new Set();
   return new Set(players.filter((p) => p.score === best).map((p) => p.id));
 }
 
@@ -193,6 +198,7 @@ export function renderLobby(app) {
           </span>
           <span class="toggle__box">${icon('check')}</span>
         </button>
+        ${s.wildVariant ? wildModePicker(s) : ''}
       </div>
 
       <div class="stack">
@@ -228,6 +234,30 @@ export function renderLobby(app) {
   `;
 }
 
+/** What each wildcard mode is called, and what it does, in the lobby. */
+const WILD_MODE_TEXT = {
+  normal: ['Normal', 'Wildcards are simply worth nothing'],
+  negative: [
+    'Negative',
+    'Each wildcard flips what its row is worth, so taking that row pays you back',
+  ],
+};
+
+/** The mode picker under the wildcard toggle; only the host can move it. */
+function wildModePicker(s) {
+  const mode = cleanWildMode(s.wildMode);
+  const opts = WILD_MODES.map((m) => {
+    const [name, hint] = WILD_MODE_TEXT[m];
+    return `
+      <button class="seg__opt" data-act="wild-mode" data-mode="${m}"
+        aria-pressed="${m === mode}" ${s.isHost ? '' : 'disabled'}>
+        <span class="seg__name">${name}</span>
+        <span class="seg__hint">${hint}</span>
+      </button>`;
+  }).join('');
+  return `<div class="seg" role="group" aria-label="Wildcard mode">${opts}</div>`;
+}
+
 /* ------------------------------- game -------------------------------- */
 
 export function renderGame(app) {
@@ -237,10 +267,16 @@ export function renderGame(app) {
   const rows = app.view.rows || g.rows;
   const names = new Map(s.players.map((p) => [p.id, p.name]));
 
+  // The room's variant settings are locked once the game starts, so they double
+  // as the game's own.
+  const neg = negativeWilds(s);
   const picking = g.phase === 'choose_row' && g.chooser === s.you && app.view.caughtUp;
   const selecting = g.phase === 'select' && s.yourCard === null;
   const preview =
-    selecting && app.selected !== null ? previewPlay(rows, app.selected) : null;
+    selecting && app.selected !== null ? previewPlay(rows, app.selected, neg) : null;
+  // A row that pays out is a prize, not a warning, so only a positive total is
+  // worth flagging.
+  const costs = preview && preview.takes && (preview.bulls === null || preview.bulls > 0);
   const choice = pendingChoice(g);
   const wildPick = picking && choice && isWild(choice.card);
 
@@ -267,13 +303,18 @@ export function renderGame(app) {
       <div class="board__main">
         <div class="rows">
           ${rowsMarkup(rows, {
+            negative: neg,
             pick: picking,
             sweep: app.view.sweep,
             land: app.view.land,
             targetRow: preview && !preview.takes ? preview.row : undefined,
-            hot: preview && preview.takes && preview.row >= 0 ? [preview.row] : [],
+            hot: costs && preview.row >= 0 ? [preview.row] : [],
             costly: wildPick
-              ? rows.map((r, i) => (r.length >= ROW_LIMIT ? i : -1)).filter((i) => i >= 0)
+              ? rows
+                  .map((r, i) =>
+                    r.length >= ROW_LIMIT && bullTotal(r, neg) > 0 ? i : -1,
+                  )
+                  .filter((i) => i >= 0)
               : [],
           })}
         </div>
@@ -287,8 +328,8 @@ export function renderGame(app) {
       </div>
 
       <div class="hand-wrap">
-        <div class="hint ${preview && preview.takes ? 'hint--warn' : ''}">
-          ${handHint(app, s, g, preview, wildPick)}
+        <div class="hint ${costs ? 'hint--warn' : ''}">
+          ${handHint(app, s, g, preview, wildPick, neg)}
         </div>
         <div class="hand${app.view.freshHand ? ' is-dealt' : ''}" id="hand">${hand(app, s, g)}</div>
         ${playButton(app, s, g, picking)}
@@ -337,7 +378,7 @@ function roster(s) {
           <span class="dot ${p.hasSelected ? 'dot--on' : 'dot--off'}"></span>
           ${ahead.has(p.id) ? `<span class="chip__crown" title="Fewest bull heads">${icon('crown')}</span>` : ''}
           <span class="chip__name">${esc(p.name)}</span>
-          <span class="chip__score">${BULL_GLYPH}<span class="num">${p.score}</span></span>
+          <span class="chip__score">${BULL_GLYPH}<span class="num">${signed(p.score)}</span></span>
         </div>`;
     })
     .join('');
@@ -370,25 +411,44 @@ function nameOf(s, id) {
   return p ? p.name : 'Someone';
 }
 
-function handHint(app, s, g, preview, wildPick) {
+function handHint(app, s, g, preview, wildPick, neg) {
   if (g.phase === 'choose_row' && g.chooser === s.you && app.view.caughtUp) {
-    return wildPick
-      ? `${icon('bolt')}<span>Tap any row &middot; a full one costs you</span>`
-      : `${icon('warn')}<span>Tap a row to take it</span>`;
+    if (wildPick) {
+      return neg
+        ? `${icon('bolt')}<span>Tap any row &middot; a full one is yours, for better or worse</span>`
+        : `${icon('bolt')}<span>Tap any row &middot; a full one costs you</span>`;
+    }
+    return `${icon('warn')}<span>Tap a row to take it</span>`;
   }
   if (!preview) return '<span>&nbsp;</span>';
   // A preview of this card alone: a lower card from someone else resolves first
   // and can change where it lands.
   if (preview.kind === 'wild') {
-    return `${icon('bolt')}<span>Wildcard &middot; resolves last, you pick the row</span>`;
+    return neg
+      ? `${icon('bolt')}<span>Wildcard &middot; pick a row and turn it negative</span>`
+      : `${icon('bolt')}<span>Wildcard &middot; resolves last, you pick the row</span>`;
   }
   if (preview.kind === 'too_low') {
     return `${icon('warn')}<span>Below every row &middot; you take one</span>`;
   }
   if (preview.kind === 'sixth') {
-    return `${icon('warn')}<span>Takes row ${preview.row + 1} &middot; ${preview.bulls}${BULL_GLYPH}</span>`;
+    const pays = preview.bulls < 0;
+    return `${icon(pays ? 'bolt' : 'warn')}<span>Takes row ${preview.row + 1} &middot;
+      ${signed(preview.bulls)}${BULL_GLYPH}</span>`;
   }
-  return `<span>Row ${preview.row + 1} &middot; adds ${bullHeads(app.selected)}${BULL_GLYPH} to it</span>`;
+  const adds = preview.adds === undefined ? bullHeads(app.selected) : preview.adds;
+  return `<span>Row ${preview.row + 1} &middot; ${adds < 0 ? 'takes' : 'adds'}
+    ${Math.abs(adds)}${BULL_GLYPH} ${adds < 0 ? 'off it' : 'to it'}</span>`;
+}
+
+/** A bull-head count that can now run either way. */
+function signed(n) {
+  return n < 0 ? `&minus;${Math.abs(n)}` : `${n}`;
+}
+
+/** A round's change in score, always carrying its sign. */
+function delta(n) {
+  return n < 0 ? `&minus;${Math.abs(n)}` : `+${n}`;
 }
 
 function hand(app, s, g) {
@@ -444,8 +504,8 @@ export function renderScores(app) {
           <span class="score-row__rank num">${i + 1}</span>
           ${ahead.has(p.id) ? `<span class="score-row__crown">${icon('crown')}</span>` : ''}
           <span class="score-row__name">${esc(p.name)}${p.id === s.you ? ' &middot; you' : ''}</span>
-          <span class="score-row__delta num">+${p.roundScore}</span>
-          <span class="score-row__total num">${BULL_GLYPH}${p.score}</span>
+          <span class="score-row__delta num">${delta(p.roundScore)}</span>
+          <span class="score-row__total num">${BULL_GLYPH}${signed(p.score)}</span>
         </div>`;
     })
     .join('');
@@ -555,6 +615,13 @@ export function rulesSheet() {
           names the row. A row with room takes one for nothing; a full row costs
           you its five cards as usual. A wildcard has no number of its own, so
           later cards read the row as ending on the highest number underneath.</dd>
+
+        <dt>Wildcard mode</dt>
+        <dd>Normal leaves it there. In negative, each wildcard in a row multiplies
+          what that row is worth by &minus;1: take a row holding one and its bull
+          heads come off your score instead of going on, and two wildcards in the
+          same row cancel out. Scores can go below zero, and the game still ends
+          after the round in which somebody reaches ${TARGET_SCORE}.</dd>
       </dl>
       <button class="btn btn--ghost" data-act="close-sheet"><span>Close</span></button>
     </div>
@@ -579,8 +646,8 @@ export function standingsSheet(app) {
             <span class="score-row__rank num">${i + 1}</span>
             ${ahead.has(p.id) ? `<span class="score-row__crown">${icon('crown')}</span>` : ''}
             <span class="score-row__name">${esc(p.name)}${p.connected ? '' : ' &middot; away'}</span>
-            <span class="score-row__delta num">+${p.roundScore}</span>
-            <span class="score-row__total num">${BULL_GLYPH}${p.score}</span>
+            <span class="score-row__delta num">${delta(p.roundScore)}</span>
+            <span class="score-row__total num">${BULL_GLYPH}${signed(p.score)}</span>
           </div>`,
           )
           .join('')}

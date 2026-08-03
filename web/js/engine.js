@@ -25,7 +25,10 @@
  * of the professional variant:
  *  - Wildcard variant: three of the dealt cards are replaced by wildcards, which
  *    are worth no bull heads, resolve after every numbered card, and are placed
- *    on a row of their owner's choosing.
+ *    on a row of their owner's choosing. It runs in one of two modes:
+ *      normal   — a wildcard is worth nothing, and nothing more;
+ *      negative — every wildcard in a row multiplies what the row is worth by
+ *                 -1, so taking a row can pay bull heads back.
  */
 
 export const ROW_COUNT = 4;
@@ -36,6 +39,19 @@ export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = 10;
 export const FULL_DECK = 104;
 export const WILD_COUNT = 3;
+/** Wildcard modes, in the order the lobby offers them. */
+export const WILD_MODES = ['normal', 'negative'];
+export const DEFAULT_WILD_MODE = 'normal';
+
+/** Anything unrecognised falls back to the plain mode. */
+export function cleanWildMode(mode) {
+  return WILD_MODES.includes(mode) ? mode : DEFAULT_WILD_MODE;
+}
+
+/** True when this game's wildcards turn the rows they sit in negative. */
+export function negativeWilds(game) {
+  return !!(game && game.wildVariant && game.wildMode === 'negative');
+}
 
 /** Wildcards are negative so they can never collide with a printed number. */
 export function isWild(card) {
@@ -69,11 +85,30 @@ export function bullHeads(card) {
   return 1;
 }
 
-/** Total bull heads of a list of cards. */
-export function bullTotal(cards) {
+/**
+ * The sign a pile of cards scores at. Always +1 in normal play; in negative mode
+ * each wildcard in the pile flips it, so one wildcard turns the pile into a
+ * refund and a second one turns it back into a cost.
+ */
+export function wildSign(cards, negative) {
+  if (!negative) return 1;
+  let sign = 1;
+  for (const c of cards) {
+    if (isWild(c)) sign = -sign;
+  }
+  return sign;
+}
+
+/**
+ * Total bull heads of a list of cards. With `negative` set — the negative
+ * wildcard mode — the total is signed by the wildcards among them.
+ */
+export function bullTotal(cards, negative) {
   let total = 0;
   for (const c of cards) total += bullHeads(c);
-  return total;
+  // `|| 0` so a row of nothing but wildcards is 0 rather than -0, which would
+  // otherwise print as "-0".
+  return total * wildSign(cards, negative) || 0;
 }
 
 /** Highest card number in play for a given player count and variant. */
@@ -184,6 +219,7 @@ export function createGame(players, options, seed) {
     })),
     proVariant: !!(options && options.proVariant),
     wildVariant: !!(options && options.wildVariant),
+    wildMode: cleanWildMode(options && options.wildMode),
     rows: [],
     selections: {},
     pending: [],
@@ -290,7 +326,9 @@ function snapshot(rows) {
 
 function takeRow(game, playerId, row, card, reason) {
   const taken = game.rows[row];
-  const bulls = bullTotal(taken);
+  // In negative mode a row carrying a wildcard pays out instead of costing, so
+  // this is the one place a score can go down.
+  const bulls = bullTotal(taken, negativeWilds(game));
   const player = playerById(game, playerId);
   player.score += bulls;
   player.roundTaken = player.roundTaken.concat(taken);
@@ -366,17 +404,21 @@ export function nextRound(game, seed) {
  * ------------------------------------------------------------------ */
 
 /**
- * Row a bot/auto-play should take. Normally the one with the fewest bull heads;
- * a wildcard costs nothing at all unless the row is full, so it goes to the
- * emptiest row instead.
+ * Row a bot/auto-play should take. Normally the one with the fewest bull heads —
+ * in negative mode that may be a row that pays out. A wildcard costs nothing at
+ * all unless the row is full, so among the rows with room it takes the emptiest.
  */
-export function cheapestRow(rows, card) {
+export function cheapestRow(rows, card, negative) {
   let best = 0;
   let bestCost = Infinity;
+  let bestLen = Infinity;
   for (let i = 0; i < rows.length; i++) {
-    const cost = isWild(card) ? rows[i].length : bullTotal(rows[i]);
-    if (cost < bestCost) {
+    const free = isWild(card) && rows[i].length < ROW_LIMIT;
+    const cost = free ? 0 : bullTotal(rows[i], negative);
+    const len = rows[i].length;
+    if (cost < bestCost || (cost === bestCost && len < bestLen)) {
       bestCost = cost;
+      bestLen = len;
       best = i;
     }
   }
@@ -387,12 +429,15 @@ export function cheapestRow(rows, card) {
  * What happens if `card` is played into `rows` right now, ignoring the other
  * players' cards. Used for the client-side hint on the selected card.
  */
-export function previewPlay(rows, card) {
+export function previewPlay(rows, card, negative) {
   if (isWild(card)) return { row: -1, takes: false, bulls: 0, kind: 'wild' };
   const row = targetRow(rows, card);
   if (row === -1) return { row: -1, takes: true, bulls: null, kind: 'too_low' };
   if (rows[row].length >= ROW_LIMIT) {
-    return { row, takes: true, bulls: bullTotal(rows[row]), kind: 'sixth' };
+    return { row, takes: true, bulls: bullTotal(rows[row], negative), kind: 'sixth' };
   }
-  return { row, takes: false, bulls: 0, kind: 'place' };
+  // What the card does to the row's value: in negative mode a row that has been
+  // flipped by a wildcard gets cheaper, not dearer, as it grows.
+  const adds = bullHeads(card) * wildSign(rows[row], negative);
+  return { row, takes: false, bulls: 0, adds, kind: 'place' };
 }

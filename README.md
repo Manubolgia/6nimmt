@@ -14,8 +14,8 @@ The rules are the published ones, implemented in full — see
 
 1. Host taps **Create room** and reads out the four-letter code.
 2. Everyone else picks a name, taps **Join room** and types the code.
-3. The host optionally turns on the **professional variant** or **wildcards**,
-   sets the turn clock, and starts.
+3. The host optionally turns on the **professional variant** or **wildcards**
+   (normal or negative), sets the turn clock, and starts.
 4. Each trick everyone commits a card at the same time; the cards are then
    revealed and resolved lowest-first.
 
@@ -80,6 +80,24 @@ and a row never begins on one.
 
 The effect is that a wildcard is an escape from a bad hand, and a way to leave
 somebody else a row they cannot avoid.
+
+### Normal and negative
+
+Wildcards run in one of two modes, chosen next to the toggle in the lobby.
+
+| | |
+|---|---|
+| Normal | a wildcard is worth nothing, and nothing more |
+| Negative | each wildcard in a row multiplies what that row is worth by −1 |
+
+In negative mode, taking a row that holds a wildcard pays its bull heads back
+instead of charging them, so a score can fall — below zero, if the round goes
+that way. Two wildcards in the same row cancel and it costs again, as a third
+would flip it back. Everything else is unchanged: the game still ends after the
+round in which somebody reaches 66, and the fewest bull heads still wins.
+
+Placing a wildcard therefore becomes an offer as much as a threat — the row you
+turn negative is a prize for whoever gets to it first, which may not be you.
 
 ## Architecture
 

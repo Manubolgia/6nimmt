@@ -455,6 +455,7 @@ const ACTIONS = {
   },
   variant: () => client.send({ type: 'setVariant', proVariant: !app.state.proVariant }),
   wild: () => client.send({ type: 'setWild', wildVariant: !app.state.wildVariant }),
+  'wild-mode': (el) => client.send({ type: 'setWildMode', wildMode: el.dataset.mode }),
   clock: (el) => {
     const at = TURN_SECONDS.indexOf(app.state.turnSeconds);
     const next = at + Number(el.dataset.step);

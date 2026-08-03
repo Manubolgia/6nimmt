@@ -66,8 +66,9 @@ export function waitingMarkup(players) {
 /**
  * The four rows.
  * @param {number[][]} rows
- * @param {{pick?: boolean, targetRow?: number, hot?: number[], sweep?: number,
- *          land?: {row: number, slot: number}, costly?: number[]}} opts
+ * @param {{negative?: boolean, pick?: boolean, targetRow?: number, hot?: number[],
+ *          sweep?: number, land?: {row: number, slot: number}, costly?: number[]}} opts
+ *   negative  — negative wildcard mode: a row's total is signed by its wildcards
  *   pick      — rows are tappable (the player must take one)
  *   targetRow — row the currently selected card would join
  *   hot       — rows to mark as expensive to play into
@@ -84,7 +85,8 @@ export function rowsMarkup(rows, opts = {}) {
       if (opts.pick || (opts.hot || []).includes(i)) cls.push('row--hot');
       if (opts.sweep === i) cls.push('row--swept');
       if (costly.includes(i)) cls.push('row--costly');
-      const total = bullTotal(row);
+      const total = bullTotal(row, opts.negative);
+      if (total < 0) cls.push('row--pays');
       const slots = [];
       for (let s = 0; s < ROW_LIMIT; s++) {
         const card = row[s];
@@ -102,9 +104,12 @@ export function rowsMarkup(rows, opts = {}) {
           slots.push(`<div class="slot">${cardFace(card, { cls: marks.join(' ') })}</div>`);
         }
       }
+      const shown = total < 0 ? `&minus;${Math.abs(total)}` : `${total}`;
+      const read =
+        total < 0 ? `${Math.abs(total)} bull heads back` : `${total} bull heads`;
       const label = opts.pick
-        ? `<button class="row__bulls" data-row="${i}" aria-label="Take row ${i + 1}, ${total} bull heads">${BULL_GLYPH}<span class="num">${total}</span></button>`
-        : `<div class="row__bulls">${BULL_GLYPH}<span class="num">${total}</span></div>`;
+        ? `<button class="row__bulls" data-row="${i}" aria-label="Take row ${i + 1}, ${read}">${BULL_GLYPH}<span class="num">${shown}</span></button>`
+        : `<div class="row__bulls">${BULL_GLYPH}<span class="num">${shown}</span></div>`;
       return `<div class="${cls.join(' ')}" data-row-index="${i}">${label}${slots.join('')}</div>`;
     })
     .join('');

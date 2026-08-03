@@ -363,6 +363,51 @@ svg {
   color: var(--wild-ink);
 }
 
+/* Two-up mode picker, sitting under the toggle it belongs to: the wildcard
+   mode. It reads as one control, so the halves share a border. */
+.seg {
+  display: flex;
+  border: 1px solid var(--line);
+}
+
+.seg__opt {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px;
+  text-align: left;
+  color: var(--muted);
+  transition: color var(--dur) linear, background var(--dur) linear;
+}
+
+.seg__opt + .seg__opt {
+  border-left: 1px solid var(--line);
+}
+
+.seg__name {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.seg__hint {
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.seg__opt[aria-pressed="true"] {
+  background: var(--wild);
+  color: var(--wild-ink);
+}
+
+.seg__opt[aria-pressed="true"] .seg__hint {
+  opacity: 0.8;
+}
+
+.seg__opt:disabled {
+  cursor: default;
+}
+
 /* A value with a minus and a plus beside it: the turn clock. */
 .stepper {
   display: flex;
@@ -778,6 +823,16 @@ svg {
   border-color: var(--accent);
   color: var(--accent);
   animation: pulse 1.4s var(--ease) infinite;
+}
+
+/* Negative mode: a row a wildcard has flipped pays out instead of costing. */
+.row--pays .row__bulls {
+  border-color: var(--wild);
+  color: var(--wild);
+}
+
+.row--pays .row__bulls svg {
+  color: var(--wild);
 }
 
 .row--swept .row__bulls {

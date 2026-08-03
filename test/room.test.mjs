@@ -143,6 +143,30 @@ test('only the host can change the variant or start the game', async () => {
   assert.equal(a.state.status, 'playing');
 });
 
+test('the host picks the wildcard mode, and only a real one', async () => {
+  const { room, code } = await newRoom();
+  const a = await connect(room, code, 'p0', 'Ada');
+  const b = await connect(room, code, 'p1', 'Bo');
+  assert.equal(a.state.wildMode, 'normal', 'wildcards start out plain');
+
+  await b.send({ type: 'setWildMode', wildMode: 'negative' });
+  assert.deepEqual(b.errors, ['not_host']);
+  assert.equal(a.state.wildMode, 'normal');
+
+  await a.send({ type: 'setWildMode', wildMode: 'sideways' });
+  assert.equal(a.errors.at(-1), 'bad_wild_mode');
+  assert.equal(a.state.wildMode, 'normal');
+
+  await a.send({ type: 'setWild', wildVariant: true });
+  await a.send({ type: 'setWildMode', wildMode: 'negative' });
+  assert.equal(b.state.wildMode, 'negative', 'and everyone is told');
+
+  await a.send({ type: 'start' });
+  await a.send({ type: 'setWildMode', wildMode: 'normal' });
+  assert.equal(a.errors.at(-1), 'already_started', 'the mode is locked at the deal');
+  assert.equal(a.state.wildMode, 'negative');
+});
+
 test('a lone player cannot start', async () => {
   const { room, code } = await newRoom();
   const a = await connect(room, code, 'p0', 'Ada');

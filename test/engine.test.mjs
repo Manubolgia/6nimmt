@@ -10,15 +10,18 @@ import {
   ROW_LIMIT,
   TARGET_SCORE,
   WILD_COUNT,
+  WILD_MODES,
   buildDeck,
   bullHeads,
   bullTotal,
   cheapestRow,
   chooseRow,
+  cleanWildMode,
   createGame,
   deckSize,
   isWild,
   makeRng,
+  negativeWilds,
   nextRound,
   previewPlay,
   resolveIfReady,
@@ -101,10 +104,16 @@ test('the cheapest row is the one with the fewest bull heads', () => {
 
 /* ------------------------------ dealing ------------------------------- */
 
-function newGame(playerCount, proVariant = false, seed = 1, wildVariant = false) {
+function newGame(
+  playerCount,
+  proVariant = false,
+  seed = 1,
+  wildVariant = false,
+  wildMode = 'normal',
+) {
   const players = [];
   for (let i = 0; i < playerCount; i++) players.push({ id: `p${i}`, name: `P${i}` });
-  return createGame(players, { proVariant, wildVariant }, seed);
+  return createGame(players, { proVariant, wildVariant, wildMode }, seed);
 }
 
 test('the deal gives everyone ten cards and starts four rows', () => {
@@ -325,15 +334,132 @@ test('preview calls a wildcard a wildcard', () => {
   });
 });
 
+/* --------------------------- negative mode ---------------------------- */
+
+test('the wildcard mode is normal unless negative is asked for by name', () => {
+  assert.deepEqual(WILD_MODES, ['normal', 'negative']);
+  assert.equal(cleanWildMode(undefined), 'normal');
+  assert.equal(cleanWildMode('nonsense'), 'normal');
+  assert.equal(cleanWildMode('negative'), 'negative');
+  assert.equal(newGame(2, false, 1, true).wildMode, 'normal');
+  assert.equal(newGame(2, false, 1, true, 'negative').wildMode, 'negative');
+
+  assert.equal(negativeWilds(newGame(2, false, 1, true, 'negative')), true);
+  assert.equal(negativeWilds(newGame(2, false, 1, true)), false);
+  assert.equal(
+    negativeWilds(newGame(2, false, 1, false, 'negative')),
+    false,
+    'the mode does nothing while wildcards are off',
+  );
+});
+
+test('a wildcard multiplies what its row is worth by -1', () => {
+  const row = [10, 20, -1];
+  assert.equal(bullTotal(row), 6, 'normal mode just adds the bull heads up');
+  assert.equal(bullTotal(row, true), -6, 'negative mode flips the sign');
+  assert.equal(bullTotal([10, 20], true), 6, 'a row with no wildcard is unchanged');
+  assert.equal(
+    bullTotal([10, -1, 20, -2], true),
+    6,
+    'two wildcards cancel each other out',
+  );
+  assert.equal(bullTotal([-1], true), 0, 'nothing to flip is still nothing');
+});
+
+test('taking a negative row pays bull heads back and can go below zero', () => {
+  const game = newGame(2, false, 5, true, 'negative');
+  // Four cards worth one bull head each, and a wildcard sitting among them.
+  game.rows = [[1], [2], [3], [41, 42, -1, 43, 46]];
+  game.players[0].hand = [47];
+  game.players[1].hand = [4];
+  selectCard(game, 'p0', 47);
+  selectCard(game, 'p1', 4);
+  resolveIfReady(game);
+
+  assert.equal(bullTotal([41, 42, -1, 43, 46]), 4, 'four one-head cards');
+  assert.equal(game.players[0].score, -4, 'the sixth card is paid, not charged');
+  assert.equal(game.log.find((e) => e.t === 'take').bulls, -4);
+  assert.deepEqual(game.rows[3], [47], 'the row still restarts on the card played');
+});
+
+test('the same row in normal mode still costs its owner', () => {
+  const game = newGame(2, false, 5, true);
+  // Four cards worth one bull head each, and a wildcard sitting among them.
+  game.rows = [[1], [2], [3], [41, 42, -1, 43, 46]];
+  game.players[0].hand = [47];
+  game.players[1].hand = [4];
+  selectCard(game, 'p0', 47);
+  selectCard(game, 'p1', 4);
+  resolveIfReady(game);
+  assert.equal(game.players[0].score, 4);
+});
+
+test('two wildcards in a row cancel, and the row costs again', () => {
+  const game = newGame(2, false, 5, true, 'negative');
+  game.rows = [[1], [2], [3], [41, -1, 42, -2, 46]];
+  game.players[0].hand = [47];
+  game.players[1].hand = [4];
+  selectCard(game, 'p0', 47);
+  selectCard(game, 'p1', 4);
+  resolveIfReady(game);
+  assert.equal(game.players[0].score, 3, 'three numbered cards, back to positive');
+});
+
+test('a wildcard onto a full negative row pays its owner', () => {
+  const game = newGame(2, false, 5, true, 'negative');
+  game.rows = [[1], [2], [3], [41, 42, -2, 43, 46]];
+  game.players[0].hand = [-1];
+  game.players[1].hand = [4];
+  selectCard(game, 'p0', -1);
+  selectCard(game, 'p1', 4);
+  resolveIfReady(game);
+  assert.equal(chooseRow(game, 'p0', 3), null);
+  assert.equal(game.players[0].score, -4);
+  assert.deepEqual(game.rows[3], [-1]);
+});
+
+test('preview and auto-play read a negative row as the prize it is', () => {
+  //            6 bulls   four one-head cards, flipped   2      3
+  const rows = [[10, 20], [31, 32, -1, 34, 36], [50], [70]];
+  const flipped = previewPlay(rows, 40, true);
+  assert.equal(flipped.kind, 'sixth');
+  assert.equal(flipped.bulls, -4, 'sweeping that row pays four back');
+  assert.equal(previewPlay(rows, 40).bulls, 4, 'normal mode still charges it');
+
+  assert.equal(previewPlay(rows, 21, true).adds, 1, 'a plain row grows dearer');
+  assert.equal(
+    previewPlay([[30, -1]], 40, true).adds,
+    -3,
+    'a flipped row grows cheaper for whoever takes it',
+  );
+
+  assert.equal(cheapestRow(rows, 1, true), 1, 'auto-play takes the row that pays');
+  assert.equal(cheapestRow(rows, 1), 2, 'in normal mode it takes the smallest');
+});
+
+test('negative games hold their invariants too', () => {
+  for (let n = MIN_PLAYERS; n <= MAX_PLAYERS; n++) {
+    for (const pro of [false, true]) {
+      const { game } = simulate(n, pro, n * 71 + (pro ? 13 : 0), true, 'negative');
+      assert.equal(game.players.length, n);
+      const best = Math.min(...game.players.map((p) => p.score));
+      assert.ok(
+        game.winners.every((id) => game.players.find((p) => p.id === id).score === best),
+        'the fewest bull heads still wins, however low that is',
+      );
+    }
+  }
+});
+
 /* ------------------------- full-game simulation ------------------------ */
 
 /**
  * Plays a whole game with pseudo-random choices and checks the invariants that
  * must hold at every step.
  */
-function simulate(playerCount, proVariant, seed, wildVariant = false) {
+function simulate(playerCount, proVariant, seed, wildVariant = false, wildMode = 'normal') {
   const rng = makeRng(seed);
-  const game = newGame(playerCount, proVariant, seed, wildVariant);
+  const game = newGame(playerCount, proVariant, seed, wildVariant, wildMode);
   const highest = deckSize(playerCount, proVariant);
   const inDeck = (c) => isWild(c) || (c >= 1 && c <= highest);
   let rounds = 0;
