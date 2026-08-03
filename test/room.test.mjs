@@ -293,7 +293,9 @@ test('rows stay legal for every player view throughout a round', async () => {
       for (const row of rows) assert.ok(row.length >= 1 && row.length <= 5);
     }
   }
-  assert.equal(players[0].state.game.phase, 'round_over');
+  // A round that crosses the target ends the game outright, which random play
+  // now reaches often enough to matter.
+  assert.ok(['round_over', 'game_over'].includes(players[0].state.game.phase));
   assert.ok(players.every((p) => p.state.hand.length === 0));
 });
 

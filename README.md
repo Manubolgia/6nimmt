@@ -49,12 +49,12 @@ is still played for after 30 seconds, so the table is never stuck.
 | Sixth card | taking a row to six cards means taking the five below it; the played card starts the row again |
 | Too low | a card below every row end lets its owner take any one row; the played card starts that row |
 | Round | 10 tricks, then a fresh deal |
-| Game end | after the round in which somebody reaches 66 bull heads — fewest bull heads wins |
+| Game end | after the round in which somebody reaches 33 bull heads — fewest bull heads wins |
 | Professional variant | deck trimmed to cards 1…(10 × players + 4), so nothing is left out of play |
 
 Two points worth spelling out, because implementations differ:
 
-- **The game ends at the end of a round, not the instant somebody passes 66.**
+- **The game ends at the end of a round, not the instant somebody passes 33.**
   With simultaneous play there is no other coherent moment to stop.
 - **A card played face down cannot be taken back.** The server rejects a second
   `play` for the same trick.
@@ -95,9 +95,14 @@ whenever a row is down to a single card — at the deal, and again every time a
 row is taken — that row is rolled for, and on a hit a wildcard is planted as its
 second card. Players play *around* them rather than with them.
 
+A round plants three wildcards, no more. *When* they land is unpredictable: the
+odds on each chance are the wildcards still owed spread over the chances the
+round has left, so they arrive at surprising moments and the round usually spends
+all three by its last trick. A round that runs short of chances plants fewer.
+
 | | |
 |---|---|
-| Chance | 35% per row, rolled each time that row is reduced to one card |
+| Number | three per round, planted at unpredictable moments |
 | Position | always the second card of the row |
 | Worth | each wildcard in a row multiplies what that row is worth by −1 |
 | Cap | at most 3 rows may be paying out at once |
@@ -116,7 +121,7 @@ anybody's hand they cannot be hoarded for the last trick. The cap of three
 guarantees at least one row stays claimable, so a low card is never stranded.
 
 Everything else is unchanged: the game still ends after the round in which
-somebody reaches 66, and the fewest bull heads still wins.
+somebody reaches 33, and the fewest bull heads still wins.
 
 ## Architecture
 

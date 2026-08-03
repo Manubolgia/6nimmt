@@ -634,7 +634,8 @@ export function rulesSheet() {
         <dt>Negative mode</dt>
         <dd>No wildcard is ever dealt. Instead one may appear on the board by
           itself, as the second card of a row that has just been reduced to a
-          single card &mdash; at the deal, and again each time a row is taken. Each
+          single card &mdash; at the deal, and again each time a row is taken. A
+          round plants three of them, at moments you cannot predict. Each
           wildcard in a row multiplies what that row is worth by &minus;1, so
           taking it pays those bull heads back, and two in one row cancel out.
           Because such a row is a prize, you may not pick it when a card too low to

@@ -17,7 +17,7 @@
  *  - A card lower than every row end lets its owner take a whole row of their
  *    choice; the played card then starts that row.
  *  - A round is 10 tricks. The game ends after the round in which somebody
- *    reaches 66 bull heads; fewest bull heads wins.
+ *    reaches 33 bull heads; fewest bull heads wins.
  *  - Professional variant: the deck is trimmed to cards 1..(10 x players + 4),
  *    so every card in the deck is in play.
  *
@@ -30,7 +30,9 @@
  *  - negative — no wildcard is ever dealt. Instead a wildcard may appear on the
  *               board by itself, seeded as the second card of any row that has
  *               just been reduced to a single card (at the deal, and after every
- *               take). Each wildcard in a row multiplies what that row is worth
+ *               take). A round plants three of them at unpredictable moments —
+ *               fewer only if it runs short of rows to plant them in. Each
+ *               wildcard in a row multiplies what that row is worth
  *               by -1, so taking that row pays bull heads back. Because such a
  *               row is a prize, nobody may *choose* it when a card too low to
  *               place lets them take a row; the only way into it is being caught
@@ -40,7 +42,7 @@
 export const ROW_COUNT = 4;
 export const ROW_LIMIT = 5;
 export const HAND_SIZE = 10;
-export const TARGET_SCORE = 66;
+export const TARGET_SCORE = 33;
 export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = 10;
 export const FULL_DECK = 104;
@@ -49,10 +51,17 @@ export const WILD_COUNT = 3;
 export const WILD_MODES = ['normal', 'negative'];
 export const DEFAULT_WILD_MODE = 'normal';
 /**
- * Negative mode: the chance, rolled once per row whenever that row is down to a
- * single card, that a wildcard is seeded into it as its second card.
+ * Negative mode: how many wildcards a single round may seed onto the board. The
+ * budget is spent at the first opportunities the round offers, so every round
+ * plants the same number rather than a random one.
  */
-export const WILD_SEED_CHANCE = 0.35;
+export const WILD_SEED_BUDGET = 3;
+/**
+ * How much of a seeding chance a trick still to come is worth when the odds are
+ * weighted. Well under one, because a trick only offers a chance if it takes a
+ * row, and many do not.
+ */
+export const WILD_CHANCE_DISCOUNT = 0.45;
 /** Negative mode seeds wildcards into the second slot of a row. */
 export const WILD_SEED_SLOT = 1;
 /**
@@ -248,15 +257,40 @@ function nextWildId(game) {
   return -game.wildSeq;
 }
 
+/** Wildcards this round has yet to plant. */
+function wildBudgetLeft(game) {
+  return WILD_SEED_BUDGET - (game.wildSeeded || 0);
+}
+
 /**
- * The roll that decides whether a freshly emptied row gets a wildcard. Drawn
- * from a stream seeded by the round's own seed, and stepped by a counter kept on
- * the game, so the sequence is reproducible from the stored state alone rather
- * than depending on when the function happened to be called.
+ * How many more chances to plant a wildcard this round can be counted on: the
+ * single-card rows on the board right now, plus a take for each trick still to
+ * come — discounted, because plenty of tricks take no row at all. Deliberately
+ * an under-estimate: it only weights the roll, and erring low drives the odds to
+ * certainty while chances remain, so the round's three actually get planted.
+ */
+function wildChancesLeft(game) {
+  let open = 0;
+  for (const row of game.rows) {
+    if (row.length === 1 && !isWild(row[0])) open += 1;
+  }
+  return open + Math.max(0, HAND_SIZE - game.trick) * WILD_CHANCE_DISCOUNT;
+}
+
+/**
+ * The roll that decides whether this chance is one of the round's three. Drawn
+ * from a stream seeded by the round's own seed and stepped by a counter kept on
+ * the game, so the sequence replays from the stored state rather than depending
+ * on when the function happened to be called.
+ *
+ * The odds are the budget spread over the chances left, so the wildcards land at
+ * unpredictable moments and yet all three are always planted by the end of the
+ * round.
  */
 function seedRoll(game) {
   game.wildRolls = (game.wildRolls || 0) + 1;
-  return makeRng(((game.wildSeed || 0) + game.wildRolls * 0x9e3779b9) >>> 0)();
+  const odds = wildBudgetLeft(game) / Math.max(1, wildChancesLeft(game));
+  return makeRng(((game.wildSeed || 0) + game.wildRolls * 0x9e3779b9) >>> 0)() < odds;
 }
 
 /** How many rows are currently paying out rather than costing. */
@@ -269,26 +303,27 @@ export function negativeRowCount(rows, negative) {
 }
 
 /**
- * Roll for a wildcard in the second slot of a single-card row, and seed one if
- * the roll succeeds and the board has room for another paying row. Returns true
+ * Plant a wildcard in the second slot of a single-card row, as long as the round
+ * has budget left and the board has room for another paying row. Returns true
  * when a wildcard was planted.
  */
 function trySeedRow(game, index) {
   const row = game.rows[index];
   if (row.length !== 1 || isWild(row[0])) return false;
+  if (wildBudgetLeft(game) <= 0) return false;
   // The cap is what keeps a chooser from being locked out: with one row always
   // claimable, the pick restriction can never leave them nowhere to go.
   if (negativeRowCount(game.rows, true) >= MAX_NEGATIVE_ROWS) return false;
-  if (seedRoll(game) >= WILD_SEED_CHANCE) return false;
+  if (!seedRoll(game)) return false;
   row.push(nextWildId(game));
+  game.wildSeeded = (game.wildSeeded || 0) + 1;
   return true;
 }
 
 /**
- * Negative mode: give every row that sits on a single card a chance of a
- * wildcard in its second slot. Called at the deal; after a take only the row
- * that was just cleared is rolled for. Rows that already hold more than their
- * starter are left alone.
+ * Negative mode: plant wildcards in the rows that sit on a single card. Called
+ * at the deal; after a take only the row that was just cleared is seeded. Rows
+ * that already hold more than their starter are left alone.
  */
 function seedWildcards(game) {
   if (!negativeWilds(game)) return;
@@ -315,15 +350,19 @@ export function dealRound(game, seed) {
   }
   game.rows = [];
   for (let i = 0; i < ROW_COUNT; i++) game.rows.push([deck[at++]]);
-  // The seeding stream belongs to the round, so a round replays identically from
-  // its seed; the wildcard ids keep counting up across rounds.
+  // The seeding stream and the budget both belong to the round, so a round
+  // replays identically from its seed and plants its own three wildcards; only
+  // the wildcard ids keep counting up across rounds.
   game.wildSeed = seed >>> 0;
   game.wildRolls = 0;
+  game.wildSeeded = 0;
+  // The trick counter is what tells the seeding how much round is left, so it is
+  // reset before the deal is rolled for.
+  game.trick = 1;
   seedWildcards(game);
   game.selections = {};
   game.pending = [];
   game.chooser = null;
-  game.trick = 1;
   game.trickId = (game.trickId || 0) + 1;
   game.log = [];
   game.phase = 'select';
@@ -349,6 +388,7 @@ export function createGame(players, options, seed) {
     wildSeq: 0,
     wildSeed: 0,
     wildRolls: 0,
+    wildSeeded: 0,
     round: 1,
     trick: 1,
     trickId: 0,
