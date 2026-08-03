@@ -564,6 +564,16 @@ function boot() {
       navigator.serviceWorker.register('./sw.js').catch(() => {
         /* offline install is a bonus, not a requirement */
       });
+      // A new worker claims the page as soon as it activates, but this page is
+      // still running the modules it booted with. Reload once, on the handover,
+      // so an installed copy picks up a deploy without being closed and
+      // reopened. Guarded because the event also fires on the very first
+      // install, when there is nothing stale to replace.
+      let claimed = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (claimed) location.reload();
+        claimed = true;
+      });
     });
   }
 }
