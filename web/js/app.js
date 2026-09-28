@@ -555,6 +555,8 @@ function boot() {
 
   playerId(); // mint the persistent identity on first run
   render();
+  // Tell the tape library around us that we have our own way back to it.
+  if (app.inLibrary) window.parent.postMessage({ type: 'mnbglibrary:hello', exit: true }, location.origin);
 
   // Straight back into a room that is still remembered from last time.
   const room = savedRoom();

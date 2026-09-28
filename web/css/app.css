@@ -152,8 +152,8 @@ svg {
   opacity: 0;
   visibility: hidden;
   transition: opacity var(--dur) linear, visibility 0s linear var(--dur);
-  padding: env(safe-area-inset-top) env(safe-area-inset-right)
-    env(safe-area-inset-bottom) env(safe-area-inset-left);
+  padding: var(--mnbg-safe-top, env(safe-area-inset-top)) var(--mnbg-safe-right, env(safe-area-inset-right))
+    var(--mnbg-safe-bottom, env(safe-area-inset-bottom)) var(--mnbg-safe-left, env(safe-area-inset-left));
 }
 
 .screen.is-active {
@@ -1439,7 +1439,7 @@ svg {
   border-top: 1px solid var(--line-strong);
   background: var(--bg);
   padding: var(--pad);
-  padding-bottom: calc(var(--pad) + env(safe-area-inset-bottom));
+  padding-bottom: calc(var(--pad) + var(--mnbg-safe-bottom, env(safe-area-inset-bottom)));
   max-height: 86%;
   overflow-y: auto;
   transform: translateY(14%);
@@ -1477,7 +1477,7 @@ svg {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: calc(16px + env(safe-area-inset-bottom));
+  bottom: calc(16px + var(--mnbg-safe-bottom, env(safe-area-inset-bottom)));
   z-index: 30;
   margin: 0 var(--pad);
   padding: 12px;
