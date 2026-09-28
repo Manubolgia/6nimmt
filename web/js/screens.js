@@ -86,6 +86,7 @@ export function renderHome(app) {
     </div>
     <div class="hr"></div>
     <div class="pad btn-row">
+      ${app.inLibrary ? '<button class="btn btn--ghost" data-act="library">Library</button>' : ''}
       <button class="btn btn--ghost" data-act="rules">Rules</button>
       <button class="btn btn--ghost" data-act="settings">Settings</button>
     </div>

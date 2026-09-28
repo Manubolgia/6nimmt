@@ -63,6 +63,8 @@ const app = {
   theme: loadTheme(),
   canInstall: false,
   rejoining: false,
+  /** Running inside the MNBG tape library, which frames its games. */
+  inLibrary: window.parent !== window && window.name === 'mnbglibrary',
   view: emptyView(),
   /** Local deadline for the turn clock, translated out of server time. */
   clock: null,
@@ -412,6 +414,8 @@ function applyTheme() {
 
 const ACTIONS = {
   create: createAndJoin,
+  // Ask the tape library around us to eject this game.
+  library: () => window.parent.postMessage({ type: 'mnbglibrary:eject' }, location.origin),
   'goto-join': () => {
     app.screen = 'join';
     app.notice = '';
